@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: enterprise-knowledge-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render's free web service has no meaningful local compute for
+      # Ollama (~512MB RAM) — the deployed instance uses free-tier cloud
+      # APIs instead. Local development keeps using Ollama; see README.
+      - key: LLM_PROVIDER
+        value: Groq
+      - key: EMBEDDING_PROVIDER
+        value: gemini
+      - key: EMBEDDING_MODEL
+        value: models/gemini-embedding-001
+      - key: EMBEDDING_DIM
+        value: "3072"
+      - key: VECTOR_BACKEND
+        value: qdrant
+      # Secrets — set these in the Render dashboard (Environment tab), not
+      # here. sync: false means "required, but never write the value into
+      # this file or Render's own config history."
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: POSTGRES_URL
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false

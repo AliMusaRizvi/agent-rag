@@ -1,0 +1,29 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+coverage/
+.vite/
+*.tsbuildinfo
+src/server/eval/eval-report.json
+
+# Claude Code local session state — machine-specific, not shared config
+.claude/
+
+# Editors/IDEs
+.vscode/
+.idea/
+
+# Certs/keys, if anything ever drops one in the repo root
+*.pem
+*.key
+*.crt
+
+# Local-only compose overrides (a common pattern for per-machine tweaks
+# that shouldn't apply to every clone of this repo)
+docker-compose.override.yml

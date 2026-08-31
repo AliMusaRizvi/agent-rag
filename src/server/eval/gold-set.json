@@ -1,0 +1,56 @@
+[
+  {
+    "question": "What are GitLab's operating principles?",
+    "expectedSourceContains": "operating-principles",
+    "expectedKeywords": ["speed with quality", "ownership mindset", "customer outcomes"]
+  },
+  {
+    "question": "What was GitLab's original CREDIT values framework, and is it still the primary framework?",
+    "expectedSourceContains": "operating-principles",
+    "expectedKeywords": ["collaboration", "results", "efficiency", "transparency"]
+  },
+  {
+    "question": "Is GitLab an all-remote company, and does it have physical offices?",
+    "expectedSourceContains": "all-remote",
+    "expectedKeywords": ["remote", "no", "office"]
+  },
+  {
+    "question": "What should I expect when starting a new remote job at GitLab?",
+    "expectedSourceContains": "getting-started",
+    "expectedKeywords": ["remote"]
+  },
+  {
+    "question": "Why does the GitLab handbook exist, and how did it start?",
+    "expectedSourceContains": "handbook/about",
+    "expectedKeywords": ["handbook", "information"]
+  },
+  {
+    "question": "How do I edit the GitLab handbook?",
+    "expectedSourceContains": "editing-handbook",
+    "expectedKeywords": ["edit"]
+  },
+  {
+    "question": "What is GitLab's approach to asynchronous communication?",
+    "expectedSourceContains": null,
+    "expectedKeywords": ["async"]
+  },
+  {
+    "question": "What is the Culture of Excellence at GitLab?",
+    "expectedSourceContains": "operating-principles",
+    "expectedKeywords": ["excellence"]
+  },
+  {
+    "question": "What is GitLab's stock ticker symbol and IPO date?",
+    "expectedSourceContains": null,
+    "expectedKeywords": [],
+    "expectRefusal": true,
+    "note": "Not documented in the handbook content path this corpus indexes — the system should say so rather than guess."
+  },
+  {
+    "question": "What is the maximum number of vacation days a GitLab employee can carry over to the next fiscal year, per the 2019 policy revision?",
+    "expectedSourceContains": null,
+    "expectedKeywords": [],
+    "expectRefusal": true,
+    "note": "A specific, plausible-sounding but fabricated detail — checks that the system doesn't hallucinate a number it was never given."
+  }
+]

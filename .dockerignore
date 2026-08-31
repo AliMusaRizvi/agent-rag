@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.env
+.env.local
+*.log
+docs
+.vite
+coverage
+.claude
+src/server/eval/eval-report.json

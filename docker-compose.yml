@@ -1,0 +1,126 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Override whatever's in .env — inside the compose network the
+      # database and vector store are reachable by service name, not
+      # localhost, and VECTOR_BACKEND is forced so it doesn't silently
+      # fall back to the in-memory store on a slow Qdrant start.
+      NODE_ENV: production
+      POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/agent_memory
+      QDRANT_URL: http://qdrant:6333
+      # The local Qdrant container below has no auth configured, so any
+      # QDRANT_API_KEY in .env (e.g. a real Qdrant Cloud key) is for a
+      # different, external instance — irrelevant and potentially
+      # confusing here. Blank it explicitly rather than forwarding it.
+      QDRANT_API_KEY: ""
+      VECTOR_BACKEND: qdrant
+      # Free, local, no API key and no rate limits — the default for a
+      # no-budget portfolio deployment. Gemini/Groq/Anthropic/OpenAI stay
+      # fully wired in (see providers.js) and are used automatically if
+      # their API keys are present in .env, but nothing here requires them.
+      LLM_PROVIDER: Ollama
+      EMBEDDING_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agent_memory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  qdrant:
+    # Pinned rather than :latest — curl/wget are deliberately not in this
+    # image (a security choice by the Qdrant team), so the healthcheck
+    # below uses bash's /dev/tcp instead; confirmed against docker-compose
+    # examples using the same pattern.
+    image: qdrant/qdrant:v1.19.0
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    # Ubuntu-based (verified against the project's own Dockerfile) — bash
+    # is present for the healthcheck, curl is not, same reasoning as qdrant.
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/11434' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    # Uncomment to use an NVIDIA GPU if one is available on the host —
+    # dramatically faster inference than CPU-only. Requires the NVIDIA
+    # Container Toolkit installed on the host.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # One-shot: pulls the models the app needs, then exits. app won't start
+  # until this completes, so the first real chat/ingest request never has
+  # to wait out a multi-GB model pull itself. Re-running `docker compose up`
+  # later is a no-op — `ollama pull` skips models already present in the
+  # ollama_data volume.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["/bin/bash", "-c"]
+    # Only pulls what's actually used by default (see config.js:
+    # OLLAMA_FAST_CHAT_MODEL intentionally matches OLLAMA_CHAT_MODEL —
+    # 1B-class models were meaningfully less reliable at this pipeline's
+    # multi-step structured reasoning). `ollama pull llama3.2:1b` yourself
+    # if you want to experiment with a faster/cheaper fast-tier after
+    # measuring its accuracy on your own gold-set questions.
+    command: >
+      "ollama pull llama3.2:3b &&
+       ollama pull nomic-embed-text &&
+       echo 'Model pull complete.'"
+    restart: "no"
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  ollama_data:
