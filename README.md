@@ -165,6 +165,15 @@ because every provider sits behind the same interface
    both have a free tier. Set `POSTGRES_URL` to it.
 4. **Everything else** (`API_KEY`, `SESSION_SECRET`, `ALLOWED_ORIGINS`,
    `GITHUB_TOKEN`/`GITHUB_REPO` if you want the tool live) — same as local.
+5. **LangSmith tracing (optional)**: off by default. Get a key at
+   [smith.langchain.com](https://smith.langchain.com) -> Settings -> API
+   Keys, set `LANGSMITH_API_KEY` to it, and flip `LANGCHAIN_TRACING_V2` to
+   `true` — every graph run then traces automatically (no code involved;
+   `@langchain/core` reads these three env vars directly). Leaving a real
+   key in but tracing off is harmless; leaving tracing on with an invalid
+   key is also harmless (verified: it fails open — a bad key logs a
+   warning per trace and never blocks or breaks the actual chat request),
+   but you'll just see nothing show up on smith.langchain.com.
 
 **Render**: `render.yaml` in this repo already declares the service, health
 check, and which env vars need a value (`sync: false` — set the actual

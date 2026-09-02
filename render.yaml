@@ -21,6 +21,17 @@ services:
         value: "3072"
       - key: VECTOR_BACKEND
         value: qdrant
+      # Off by default — flip to "true" in the dashboard once a real
+      # LANGSMITH_API_KEY is set below (get one at smith.langchain.com ->
+      # Settings -> API Keys). Declared here so it's a visible, documented
+      # toggle instead of three env vars you'd have to know to add
+      # manually with no hint from this file that they're supported.
+      - key: LANGCHAIN_TRACING_V2
+        value: "false"
+      - key: LANGCHAIN_PROJECT
+        value: enterprise-knowledge-agent
+      - key: LANGSMITH_API_KEY
+        sync: false
       # Secrets — set these in the Render dashboard (Environment tab), not
       # here. sync: false means "required, but never write the value into
       # this file or Render's own config history."

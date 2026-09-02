@@ -3,6 +3,7 @@ import { fileTypeFromBuffer } from 'file-type';
 import { createRequire } from 'module';
 import { config } from '../config.js';
 import { addDocuments } from '../vectorstore.js';
+import { headerAwareChunk } from '../ingest.js';
 import { logger } from '../logger.js';
 
 const require = createRequire(import.meta.url);
@@ -68,13 +69,27 @@ export async function uploadHandler(req, res) {
     return res.status(422).json({ error: 'No extractable text found in this file.' });
   }
 
+  // headerAwareChunk splits on markdown headers first, but a PDF/DOCX
+  // extraction never has any — it falls straight through to the same
+  // paragraph/line/hard-slice accumulator ingest.js uses for an oversized
+  // handbook section, which is exactly what's needed here too. Without
+  // this, the whole document (up to MAX_EXTRACTED_CHARS = 200,000 chars)
+  // used to be handed to addDocuments() as ONE record: embedDocuments()
+  // has no chunking of its own, so a large upload's embedding would only
+  // ever represent its first ~6,000 characters (Ollama's per-text safety
+  // truncation) while the FULL, untruncated text still got shoved into
+  // the LLM's prompt whenever that one oversized "chunk" was retrieved —
+  // both a retrieval blind spot beyond the first page or two, and a real
+  // risk of blowing the model's context window on generation.
+  const chunks = headerAwareChunk(textContent, originalname).map((c) => ({
+    content: `${c.heading}\n\n${c.text}`,
+    metadata: { source: originalname, type: 'uploaded', section: c.heading },
+  }));
+
   // Private to the uploading session (tenantId), never merged into the
   // shared global corpus — one user's upload must not answer another
   // user's question (see the audit's cross-tenant-leak finding).
-  const count = await addDocuments(
-    [{ content: textContent, metadata: { source: originalname, type: 'uploaded' } }],
-    { tenantId: req.sessionId },
-  );
+  const count = await addDocuments(chunks, { tenantId: req.sessionId });
 
   res.json({ success: true, filename: originalname, chunksIndexed: count });
 }

@@ -9,8 +9,9 @@ import { UserMessage } from './components/UserMessage';
 import { ApprovalCard } from './components/ApprovalCard';
 import { Sidebar } from './components/Sidebar';
 import { ConfidenceChart } from './components/ConfidenceChart';
+import { GuideModal } from './components/GuideModal';
 import { exportToMarkdown, cn, safeLocalStorageGet, safeLocalStorageSet } from './lib/utils';
-import { ExternalLink, RotateCcw, Menu, Download, ChevronDown, Search, X, Database, Trash2, FileText, Sun, Moon, Sliders } from 'lucide-react';
+import { ExternalLink, RotateCcw, Menu, Download, ChevronDown, Search, X, Database, Trash2, FileText, Sun, Moon, Sliders, Compass } from 'lucide-react';
 
 const MAX_STORED_THREADS = 50;
 const DEFAULT_MODEL = 'Ollama';
@@ -45,6 +46,7 @@ export default function App() {
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [isContextPanelOpen, setIsContextPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [agentPersona, setAgentPersona] = useState(() => safeLocalStorageGet('agentPersona', 'concise'));
   const [systemPrompt, setSystemPrompt] = useState(() => safeLocalStorageGet('systemPrompt', ''));
   const [isDarkMode, setIsDarkMode] = useState(() => safeLocalStorageGet('isDarkMode', true));
@@ -69,6 +71,20 @@ export default function App() {
         // Model picker degrades to just the default — the chat itself
         // still works, the backend resolves the model server-side either way.
       });
+  }, []);
+
+  // Show the "getting started" guide once, automatically, for a genuinely
+  // new visitor — someone with no saved threads at all — and never again
+  // after that unless they reopen it themselves from the header. Checking
+  // getInitialThreads() directly (not the `threads` state) avoids a race
+  // with the thread-persistence effect above, which only starts writing
+  // once messages exist.
+  useEffect(() => {
+    const hasSeenGuide = safeLocalStorageGet('hasSeenGuide', false);
+    if (!hasSeenGuide && getInitialThreads().length === 0) {
+      setIsGuideOpen(true);
+      safeLocalStorageSet('hasSeenGuide', true);
+    }
   }, []);
 
   const [contextData, setContextData] = useState<{sources: Citation[], cacheHits: number}>({sources: [], cacheHits: 0});
@@ -424,15 +440,24 @@ export default function App() {
         </div>
         
         <div className="flex items-center gap-1 sm:gap-2 relative">
-          <button 
+          <button
+            onClick={() => setIsGuideOpen(true)}
+            className="text-textMuted hover:text-textMain text-sm flex items-center gap-1.5 transition-colors px-2.5 py-1.5 rounded-md hover:bg-surfaceHover"
+            title="How to use this"
+          >
+            <Compass size={16} />
+            <span className="hidden sm:inline">Guide</span>
+          </button>
+
+          <button
             onClick={() => setIsDarkMode(!isDarkMode)}
             className="text-textMuted hover:text-textMain text-sm flex items-center gap-1.5 transition-colors px-2.5 py-1.5 rounded-md hover:bg-surfaceHover"
             title="Toggle Theme"
           >
             {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          
-          <button 
+
+          <button
             onClick={() => {
               setIsChatSearchOpen(!isChatSearchOpen);
               if (!isChatSearchOpen) setChatSearchQuery('');
@@ -708,8 +733,15 @@ export default function App() {
               </div>
             </div>
           </div>
-          <div className="p-4 border-t border-border/60 flex justify-end">
-            <button 
+          <div className="p-4 border-t border-border/60 flex items-center justify-between">
+            <button
+              onClick={() => { setIsSettingsOpen(false); setIsGuideOpen(true); }}
+              className="text-sm text-textMuted hover:text-textMain flex items-center gap-1.5 transition-colors"
+            >
+              <Compass size={14} />
+              How to use this
+            </button>
+            <button
               onClick={() => setIsSettingsOpen(false)}
               className="px-4 py-2 bg-primary hover:bg-primaryHover text-white text-sm font-medium rounded-lg transition-colors"
             >
@@ -719,7 +751,11 @@ export default function App() {
         </div>
       </div>
     )}
-    
+
+    {isGuideOpen && (
+      <GuideModal onClose={() => setIsGuideOpen(false)} onTryQuestion={handleSendMessage} />
+    )}
+
     </div>
   );
 }
