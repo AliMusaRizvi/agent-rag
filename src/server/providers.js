@@ -18,6 +18,7 @@ import { logger } from './logger.js';
 const FAST_MODEL_BY_PROVIDER = {
   Groq: () => config.GROQ_FAST_MODEL,
   Ollama: () => config.OLLAMA_FAST_CHAT_MODEL,
+  OpenRouter: () => config.OPENROUTER_FAST_MODEL,
 };
 
 const registry = {
@@ -74,13 +75,31 @@ const registry = {
       ...opts,
     }),
   },
+  OpenRouter: {
+    label: 'OpenRouter',
+    available: Boolean(config.OPENROUTER_API_KEY),
+    // OpenRouter's API is OpenAI-compatible, so ChatOpenAI works unmodified
+    // against it — just a different base URL. Chat only: verified live
+    // that its embeddings endpoint exists but only proxies to paid models
+    // (a real call returned 402 "insufficient credits"); its model catalog
+    // has no embedding models at all, free or paid. See config.js for how
+    // OPENROUTER_MODEL/OPENROUTER_FAST_MODEL were chosen and verified.
+    build: (opts = {}) => new ChatOpenAI({
+      apiKey: config.OPENROUTER_API_KEY,
+      model: config.OPENROUTER_MODEL,
+      temperature: 0.2,
+      configuration: { baseURL: 'https://openrouter.ai/api/v1' },
+      ...opts,
+    }),
+  },
 };
 
 // The order fallback attempts are tried in when the requested provider
 // isn't the one that fails. Ollama first (free, local, no rate limits —
-// the right default for a no-budget deployment); paid/rate-limited cloud
-// providers only get tried if they're actually configured.
-const FALLBACK_ORDER = ['Ollama', 'Groq', 'Gemini', 'Anthropic', 'OpenAI'];
+// the right default for a no-budget deployment), then the other free-tier
+// cloud options (Groq, Gemini, OpenRouter); Anthropic/OpenAI are paid-key
+// providers that only get tried if the user configured their own key.
+const FALLBACK_ORDER = ['Ollama', 'Groq', 'Gemini', 'OpenRouter', 'Anthropic', 'OpenAI'];
 
 export function listModels() {
   return Object.entries(registry).map(([id, p]) => ({ id, label: p.label, available: p.available }));

@@ -13,9 +13,10 @@ a real Llama chat model (`llama3.2`) and a dedicated embedding model
 this pairs a real Llama chat model with the standard high-quality choice
 for local RAG embeddings). No API key, no billing account, and no rate
 limit required to run the whole thing end to end. Every cloud provider
-(Gemini, Groq, Anthropic, OpenAI) stays fully wired in behind the same
-interface (`src/server/providers.js`) and is picked up automatically the
-moment its API key is set — this is a config change, not a code change.
+(Gemini, Groq, Anthropic, OpenAI, OpenRouter) stays fully wired in behind
+the same interface (`src/server/providers.js`) and is picked up
+automatically the moment its API key is set — this is a config change,
+not a code change.
 
 This is a **Node.js / Express / LangGraph.js** application — a single
 backend and one React/TypeScript frontend, not the Python/FastAPI split
@@ -286,3 +287,18 @@ hiding them:
 - **Rate limiting and the answer cache are in-process**, fine for one
   instance; a multi-instance deployment needs a shared store (Redis) for
   both.
+- **OpenRouter's free tier is a shared, uncontrolled pool.** Verified live
+  at integration time: the obvious first model choices (Google's Gemma
+  releases) returned a real `429 temporarily rate-limited upstream` from
+  Google AI Studio's own free pool on every attempt; a second candidate
+  returned malformed non-JSON output on a structured call after minutes of
+  latency. The configured default (NVIDIA's Nemotron) answered reliably in
+  testing — see `config.js` for the exact verification command, and
+  re-check occasionally, since this is demand on a pool this project
+  doesn't control.
+
+See [`TODO.md`](TODO.md) for the fuller roadmap — hardening items, new
+capability, and a cross-domain playbook showing what would change (corpus
++ tool integration) to retarget this at a legal, healthcare, finance, HR,
+or support use case without touching the retrieval/grounding/approval
+engine underneath.

@@ -17,6 +17,7 @@ const schema = z.object({
   GROQ_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
 
   // Default provider for both chat and the graph's own defaults (state
   // channel default, chat.js's fallback when the client doesn't specify a
@@ -33,6 +34,29 @@ const schema = z.object({
   // been a while: `curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"`.
   FALLBACK_LLM_MODEL: z.string().default('openai/gpt-oss-120b'),
   GROQ_FAST_MODEL: z.string().default('openai/gpt-oss-20b'),
+
+  // OpenRouter: an aggregator, not its own model — routes to whichever
+  // lab actually serves the requested id. Chat only: verified live against
+  // its own /api/v1/embeddings endpoint, which exists but only proxies to
+  // paid models (a real request for one returned 402 "insufficient
+  // credits") — its full model catalog has zero embedding models, free or
+  // paid, so this is chat-only, the same treatment Groq gets and for the
+  // same reason.
+  //
+  // Model choice verified live, twice, at integration time — not just
+  // "exists in the catalog": both of Google's free Gemma releases (the
+  // obvious first pick — new, well-known, and they do advertise
+  // tools/tool_choice/response_format support) returned a live 429
+  // "temporarily rate-limited upstream" from Google AI Studio's own shared
+  // free-tier pool on every attempt. NVIDIA's Nemotron, tried next,
+  // answered a real withStructuredOutput() call correctly in ~2.2s on two
+  // separate tries; MiniMax's M3 (also tried) hung for minutes on the same
+  // test and was dropped. Free-tier model availability on a shared
+  // upstream pool shifts over time, so re-verify before deploying if it's
+  // been a while — the exact command used here:
+  // `curl https://openrouter.ai/api/v1/chat/completions -H "Authorization: Bearer $OPENROUTER_API_KEY" -H "Content-Type: application/json" -d '{"model":"<id>","messages":[{"role":"user","content":"hi"}]}'`.
+  OPENROUTER_MODEL: z.string().default('nvidia/nemotron-3-super-120b-a12b:free'),
+  OPENROUTER_FAST_MODEL: z.string().default('nvidia/nemotron-3-super-120b-a12b:free'),
 
   // Ollama: self-hosted, zero cost, zero rate limits — the practical
   // choice for a portfolio project with no API budget. Needs an actual
@@ -129,11 +153,12 @@ const env = parsed.data;
 // OLLAMA_BASE_URL always has a default value even when nothing is
 // actually listening there yet.
 const hasAnyCloudProvider = Boolean(
-  env.GOOGLE_API_KEY || env.GEMINI_API_KEY || env.GROQ_API_KEY || env.ANTHROPIC_API_KEY || env.OPENAI_API_KEY,
+  env.GOOGLE_API_KEY || env.GEMINI_API_KEY || env.GROQ_API_KEY || env.ANTHROPIC_API_KEY
+  || env.OPENAI_API_KEY || env.OPENROUTER_API_KEY,
 );
 if (env.LLM_PROVIDER !== 'Ollama' && !hasAnyCloudProvider) {
   console.error('Invalid environment configuration:');
-  console.error('  - LLM_PROVIDER is not Ollama, and none of GOOGLE_API_KEY/GEMINI_API_KEY, GROQ_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY is set');
+  console.error('  - LLM_PROVIDER is not Ollama, and none of GOOGLE_API_KEY/GEMINI_API_KEY, GROQ_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY is set');
   process.exit(1);
 }
 

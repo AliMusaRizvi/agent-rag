@@ -55,3 +55,9 @@ services:
         sync: false
       - key: GITHUB_REPO
         sync: false
+      # Optional — an extra free-tier chat fallback behind Groq/Gemini.
+      # Leave blank to skip it entirely; providers.js already treats it as
+      # unavailable with no key set. See README "Known limitations" for
+      # its live-verified free-tier reliability characteristics.
+      - key: OPENROUTER_API_KEY
+        sync: false
