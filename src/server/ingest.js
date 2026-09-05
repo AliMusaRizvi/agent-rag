@@ -9,15 +9,27 @@ import { addDocuments, initVectorStore, getCorpusSize, GLOBAL_TENANT } from './v
 // if the network fetch genuinely fails — clearly labeled when it does, so
 // nobody mistakes the fallback for the real corpus.
 
-// Gemini's free tier cannot reliably bulk-embed the full ~400-file/~5,000-
-// chunk corpus in one run — verified repeatedly, including after a multi-
-// day quota reset: the constraint is a sustained per-minute cap across the
-// ~150 sequential embedding requests a full ingest needs, not just a daily
-// total. Ollama has no such ceiling (self-hosted, no rate limit — just
-// slower on CPU), so it gets the full default; Gemini gets a number
-// actually proven to complete reliably. Override with INGEST_MAX_FILES if
-// you know your own quota tolerates more.
-const DEFAULT_MAX_FILES = config.EMBEDDING_PROVIDER === 'ollama' ? 400 : 150;
+// Gemini's free tier caps embeddings at 1,000 requests PER DAY — the exact
+// quota metric it rejects with is
+// `generativelanguage.googleapis.com/embed_content_free_tier_requests,
+// limit: 1000`. That is a hard daily ceiling, not a burst limit that
+// backoff can wait out, which is why the retry logic in embeddings.js
+// can't rescue an over-budget run: there is nothing to wait for until the
+// quota resets.
+//
+// Sizing against it is arithmetic, measured from a real full run: 400
+// files produced 5,159 chunks, so ~13 chunks/file. 60 files is therefore
+// ~775 chunks — comfortably inside 1,000 with room for the variation in
+// how long individual handbook pages are. The previous value here (150)
+// implied ~2,000 chunks, twice the daily budget; a deployed run at that
+// setting burned the full quota, spent 13 minutes retrying into a wall,
+// and indexed nothing at all.
+//
+// Ollama has no such ceiling (self-hosted, no rate limit — just slower on
+// CPU), so it keeps the full corpus. Override either with
+// INGEST_MAX_FILES if your own quota differs (a paid Gemini tier lifts
+// this entirely).
+const DEFAULT_MAX_FILES = config.EMBEDDING_PROVIDER === 'ollama' ? 400 : 60;
 const MAX_FILES = Number(process.env.INGEST_MAX_FILES || DEFAULT_MAX_FILES);
 const CONCURRENCY = 6;
 const MAX_CHUNK_CHARS = 1400;

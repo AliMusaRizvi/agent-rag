@@ -10,8 +10,9 @@ import { ApprovalCard } from './components/ApprovalCard';
 import { Sidebar } from './components/Sidebar';
 import { ConfidenceChart } from './components/ConfidenceChart';
 import { GuideModal } from './components/GuideModal';
+import { LiveProgress, LiveStep } from './components/LiveProgress';
 import { exportToMarkdown, cn, safeLocalStorageGet, safeLocalStorageSet } from './lib/utils';
-import { ExternalLink, RotateCcw, Menu, Download, ChevronDown, Search, X, Database, Trash2, FileText, Sun, Moon, Sliders, Compass } from 'lucide-react';
+import { ExternalLink, RotateCcw, Menu, Download, ChevronDown, Search, X, Database, Trash2, FileText, Sun, Moon, Sliders, Compass, MoreHorizontal } from 'lucide-react';
 
 const MAX_STORED_THREADS = 50;
 const DEFAULT_MODEL = 'Ollama';
@@ -47,6 +48,8 @@ export default function App() {
   const [isContextPanelOpen, setIsContextPanelOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isGuideOpen, setIsGuideOpen] = useState(false);
+  const [liveSteps, setLiveSteps] = useState<LiveStep[]>([]);
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [agentPersona, setAgentPersona] = useState(() => safeLocalStorageGet('agentPersona', 'concise'));
   const [systemPrompt, setSystemPrompt] = useState(() => safeLocalStorageGet('systemPrompt', ''));
   const [isDarkMode, setIsDarkMode] = useState(() => safeLocalStorageGet('isDarkMode', true));
@@ -200,18 +203,50 @@ export default function App() {
       // history on every turn, which meant any caller could forge prior
       // "agent" turns the model would then treat as its own past output.
       // Only the new message and the thread id cross the wire now.
-      const res = await fetch('/chat', {
+      //
+      // /chat/stream runs the identical pipeline as /chat but emits an event
+      // as each graph node finishes, so the UI can show real progress
+      // instead of an opaque spinner. The final "done" event carries the
+      // exact same payload /chat would have returned.
+      const res = await fetch('/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, thread_id: threadId, model: selectedModel, persona: agentPersona, systemPrompt: systemPrompt })
       });
 
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
         const errBody = await res.json().catch(() => ({}));
         throw new Error(errBody.error || `Request failed (${res.status})`);
       }
 
-      const data = await res.json();
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let data: any = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // SSE frames are separated by a blank line; anything after the last
+        // one is a partial frame to carry into the next read.
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() || '';
+        for (const frame of frames) {
+          const line = frame.trim();
+          if (!line.startsWith('data:')) continue;
+          const event = JSON.parse(line.slice(5).trim());
+          if (event.type === 'node') {
+            setLiveSteps(prev => [...prev, { node: event.node, detail: event.detail }]);
+          } else if (event.type === 'done') {
+            data = event.payload;
+          } else if (event.type === 'error') {
+            throw new Error(event.error);
+          }
+        }
+      }
+
+      if (!data) throw new Error('The connection closed before the agent finished answering.');
 
       // Citations now arrive as structured, server-verified data (every
       // citation is checked against what was actually retrieved) — no more
@@ -262,6 +297,7 @@ export default function App() {
       toast.error(error instanceof Error ? error.message : 'Failed to connect to the backend server. Please try again.');
     } finally {
       setIsLoading(false);
+      setLiveSteps([]);
     }
   };
 
@@ -351,7 +387,26 @@ export default function App() {
     });
   };
 
-  const displayedMessages = messages.filter(m => 
+  // The picker lists both bare providers and OpenRouter's individual free
+  // models, which is far too many entries for one flat list — grouped so
+  // "Providers" stays at the top and the free catalog reads as a set.
+  const modelGroups = React.useMemo(() => {
+    const list = availableModels.length > 0
+      ? availableModels
+      : [{ id: DEFAULT_MODEL, label: DEFAULT_MODEL, available: true, provider: DEFAULT_MODEL }];
+    const providers = list.filter(m => !m.id.includes('::'));
+    const openRouterFree = list.filter(m => m.id.startsWith('OpenRouter::'));
+    const groups: Array<[string, ModelInfo[]]> = [['Providers', providers]];
+    if (openRouterFree.length) groups.push([`OpenRouter free models (${openRouterFree.length})`, openRouterFree]);
+    return groups;
+  }, [availableModels]);
+
+  const selectedModelLabel = availableModels.find(m => m.id === selectedModel)?.label
+    // A pinned model the catalog no longer lists (retired upstream, or a
+    // thread restored from localStorage) still needs a readable label.
+    || (selectedModel.includes('::') ? selectedModel.split('::')[1] : selectedModel);
+
+  const displayedMessages = messages.filter(m =>
     !chatSearchQuery || 
     m.content.toLowerCase().includes(chatSearchQuery.toLowerCase()) || 
     (m.pending_tool_args && JSON.stringify(m.pending_tool_args).toLowerCase().includes(chatSearchQuery.toLowerCase()))
@@ -396,43 +451,58 @@ export default function App() {
             
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative ml-2">
-                <button 
+                <button
                   onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-                  className="flex items-center gap-1.5 px-2 py-0.5 border border-border/80 hover:bg-surfaceHover rounded text-[10px] uppercase tracking-wider font-semibold text-textMuted hover:text-textMain transition-colors bg-surface/30"
+                  className="flex items-center gap-1.5 px-2 py-0.5 border border-border/80 hover:bg-surfaceHover rounded text-[10px] uppercase tracking-wider font-semibold text-textMuted hover:text-textMain transition-colors bg-surface/30 max-w-[260px]"
+                  title={selectedModelLabel}
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
-                  {selectedModel}
-                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-primary/20 text-primary text-[8px] font-bold">BETA</span>
-                  <ChevronDown size={10} className={cn("transition-transform", isModelDropdownOpen && "rotate-180")} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse flex-none"></span>
+                  <span className="truncate normal-case tracking-normal">{selectedModelLabel}</span>
+                  <ChevronDown size={10} className={cn("flex-none transition-transform", isModelDropdownOpen && "rotate-180")} />
                 </button>
-                
+
                 {isModelDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-2 w-48 bg-surface border border-border rounded-lg shadow-lg overflow-hidden z-50 py-1">
-                    {/* Availability reflects which provider actually has an API key
-                        configured server-side, fetched from GET /api/models — not a
-                        hardcoded "Coming Soon" list that never becomes true. */}
-                    {(availableModels.length > 0 ? availableModels : [{ id: DEFAULT_MODEL, label: DEFAULT_MODEL, available: true }]).map(model => (
-                      <button
-                        key={model.id}
-                        disabled={!model.available}
-                        onClick={() => {
-                          setSelectedModel(model.id);
-                          setIsModelDropdownOpen(false);
-                        }}
-                        className={cn(
-                          "w-full text-left px-4 py-2 text-xs transition-colors font-medium flex items-center justify-between",
-                          !model.available && "text-textMuted opacity-50 cursor-not-allowed",
-                          model.available && selectedModel === model.id ? "bg-primary/10 text-primary" : "",
-                          model.available && selectedModel !== model.id ? "text-textMain hover:bg-surfaceHover" : ""
-                        )}
-                      >
-                        <span>{model.label}</span>
-                        {model.available
-                          ? selectedModel === model.id && <span className="w-1.5 h-1.5 rounded-full bg-primary"></span>
-                          : <span className="text-[9px] bg-surfaceHover px-1.5 py-0.5 rounded">No API key</span>}
-                      </button>
-                    ))}
-                  </div>
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsModelDropdownOpen(false)} />
+                    <div className="absolute top-full left-0 mt-2 w-72 max-h-[70vh] overflow-y-auto custom-scrollbar bg-surface border border-border rounded-lg shadow-lg z-50 py-1">
+                      {/* Availability is real: it reflects which providers have a
+                          key configured server-side, and for Ollama whether the
+                          server is actually reachable — fetched from
+                          GET /api/models, not a hardcoded list. The OpenRouter
+                          group is its live free-model catalog, filtered to models
+                          that support structured output (the graph needs it). */}
+                      {modelGroups.map(([groupName, models]) => (
+                        <div key={groupName}>
+                          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-textMuted/70">
+                            {groupName}
+                          </div>
+                          {models.map(model => (
+                            <button
+                              key={model.id}
+                              disabled={!model.available}
+                              onClick={() => {
+                                setSelectedModel(model.id);
+                                setIsModelDropdownOpen(false);
+                              }}
+                              className={cn(
+                                "w-full text-left px-3 py-1.5 text-xs transition-colors flex items-center justify-between gap-2",
+                                !model.available && "text-textMuted opacity-50 cursor-not-allowed",
+                                model.available && selectedModel === model.id ? "bg-primary/10 text-primary" : "",
+                                model.available && selectedModel !== model.id ? "text-textMain hover:bg-surfaceHover" : ""
+                              )}
+                            >
+                              <span className="truncate" title={model.label}>{model.label}</span>
+                              {model.available
+                                ? selectedModel === model.id && <span className="w-1.5 h-1.5 rounded-full bg-primary flex-none"></span>
+                                : <span className="text-[9px] bg-surfaceHover px-1.5 py-0.5 rounded flex-none">
+                                    {model.id === 'Ollama' ? 'Not running' : 'No API key'}
+                                  </span>}
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             </div>
@@ -450,53 +520,78 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setIsDarkMode(!isDarkMode)}
-            className="text-textMuted hover:text-textMain text-sm flex items-center gap-1.5 transition-colors px-2.5 py-1.5 rounded-md hover:bg-surfaceHover"
-            title="Toggle Theme"
-          >
-            {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
-
-          <button
             onClick={() => {
               setIsChatSearchOpen(!isChatSearchOpen);
               if (!isChatSearchOpen) setChatSearchQuery('');
             }}
             className={cn(
-              "text-textMuted hover:text-textMain text-sm flex items-center gap-1.5 transition-colors px-2.5 py-1.5 rounded-md hover:bg-surfaceHover",
+              "text-textMuted hover:text-textMain transition-colors p-2 rounded-lg hover:bg-surfaceHover",
               isChatSearchOpen && "bg-surfaceHover text-textMain"
             )}
-            title="Find in Chat"
+            title="Find in this conversation"
           >
             <Search size={16} />
-            <span className="hidden sm:inline">Find</span>
           </button>
-          
-          <button 
+
+          <button
             onClick={() => setIsContextPanelOpen(true)}
-            className="text-textMuted hover:text-textMain text-sm flex items-center gap-1.5 transition-colors px-2.5 py-1.5 rounded-md hover:bg-surfaceHover"
-            title="Context Management"
+            className="text-textMuted hover:text-textMain transition-colors p-2 rounded-lg hover:bg-surfaceHover"
+            title="Sources used in this conversation"
           >
             <Database size={16} />
-            <span className="hidden sm:inline">Context</span>
           </button>
-          
-          <button 
-            onClick={() => exportToMarkdown(messages, selectedModel)}
-            className="text-textMuted hover:text-textMain text-sm flex items-center gap-1.5 transition-colors px-2.5 py-1.5 rounded-md hover:bg-surfaceHover"
-            title="Download Chat History"
+
+          {/* Everything below is a secondary action. Six always-visible
+              buttons made the header read as a toolbar competing with the
+              conversation; the three least-used now live behind one control. */}
+          <button
+            onClick={() => setIsMoreMenuOpen(!isMoreMenuOpen)}
+            className={cn(
+              "text-textMuted hover:text-textMain transition-colors p-2 rounded-lg hover:bg-surfaceHover",
+              isMoreMenuOpen && "bg-surfaceHover text-textMain"
+            )}
+            title="More"
           >
-            <Download size={16} />
-            <span className="hidden sm:inline">Export</span>
+            <MoreHorizontal size={16} />
           </button>
-          <button 
-            onClick={handleReset}
-            className="text-textMuted hover:text-textMain text-sm flex items-center gap-1.5 transition-colors px-2.5 py-1.5 rounded-md hover:bg-surfaceHover"
-            title="Reset conversation (Ctrl+N)"
-          >
-            <RotateCcw size={16} />
-            <span className="hidden sm:inline">Reset</span>
-          </button>
+
+          {isMoreMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setIsMoreMenuOpen(false)} />
+              <div className="absolute top-full right-0 mt-2 w-52 bg-surface border border-border rounded-xl shadow-lg overflow-hidden z-50 py-1 animate-in slide-in-from-top-2 fade-in duration-150">
+                <button
+                  onClick={() => { setIsDarkMode(!isDarkMode); setIsMoreMenuOpen(false); }}
+                  className="w-full text-left px-3.5 py-2 text-sm text-textMain hover:bg-surfaceHover transition-colors flex items-center gap-2.5"
+                >
+                  {isDarkMode ? <Sun size={15} className="text-textMuted" /> : <Moon size={15} className="text-textMuted" />}
+                  {isDarkMode ? 'Light mode' : 'Dark mode'}
+                </button>
+                <button
+                  onClick={() => { exportToMarkdown(messages, selectedModel); setIsMoreMenuOpen(false); }}
+                  className="w-full text-left px-3.5 py-2 text-sm text-textMain hover:bg-surfaceHover transition-colors flex items-center gap-2.5"
+                >
+                  <Download size={15} className="text-textMuted" />
+                  Export conversation
+                </button>
+                <button
+                  onClick={() => { setIsSettingsOpen(true); setIsMoreMenuOpen(false); }}
+                  className="w-full text-left px-3.5 py-2 text-sm text-textMain hover:bg-surfaceHover transition-colors flex items-center gap-2.5"
+                >
+                  <Sliders size={15} className="text-textMuted" />
+                  Settings
+                </button>
+                <div className="my-1 border-t border-border/60" />
+                <button
+                  onClick={() => { handleReset(); setIsMoreMenuOpen(false); }}
+                  className="w-full text-left px-3.5 py-2 text-sm text-textMain hover:bg-surfaceHover transition-colors flex items-center gap-2.5"
+                >
+                  <RotateCcw size={15} className="text-textMuted" />
+                  New conversation
+                  <kbd className="ml-auto text-[10px] text-textMuted border border-border rounded px-1 py-0.5">Ctrl+N</kbd>
+                </button>
+              </div>
+            </>
+          )}
 
           {isChatSearchOpen && (
             <div className="absolute top-full right-0 mt-2 w-64 bg-surface border border-border rounded-xl shadow-lg p-2 z-50 animate-in slide-in-from-top-2 fade-in">
@@ -557,14 +652,7 @@ export default function App() {
             })
           )}
           {isLoading && !messages[messages.length - 1]?.isApprovalCard && !chatSearchQuery && (
-            <div className="flex items-center gap-3 text-textMuted mt-4 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-500">
-              <div className="flex gap-1.5 items-center bg-surfaceHover/50 px-3 py-1.5 rounded-full border border-border/50">
-                <span className="w-2 h-2 bg-primary/70 rounded-full animate-wave" style={{ animationDelay: '0ms' }}></span>
-                <span className="w-2 h-2 bg-primary/70 rounded-full animate-wave" style={{ animationDelay: '150ms' }}></span>
-                <span className="w-2 h-2 bg-primary/70 rounded-full animate-wave" style={{ animationDelay: '300ms' }}></span>
-              </div>
-              <span className="text-sm font-medium animate-smooth-pulse text-primary/80 bg-clip-text text-transparent bg-gradient-to-r from-primary to-primaryHover">Agent is thinking...</span>
-            </div>
+            <LiveProgress steps={liveSteps} />
           )}
           <div ref={endOfMessagesRef} />
         </div>
@@ -583,7 +671,7 @@ export default function App() {
       <div className="p-4 border-b border-border/60 flex items-center justify-between">
         <h2 className="font-medium text-textMain flex items-center gap-2">
           <Database size={18} className="text-primary" />
-          Context Management
+          Sources this session
         </h2>
         <button onClick={() => setIsContextPanelOpen(false)} className="p-1.5 text-textMuted hover:text-textMain hover:bg-surfaceHover rounded-md transition-colors">
           <X size={18} />
@@ -592,10 +680,15 @@ export default function App() {
       
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
         <div>
-          <h3 className="text-xs font-semibold text-textMuted uppercase tracking-wider mb-3">KV Cache Status</h3>
-          <div className="bg-background rounded-lg p-3 border border-border/50 flex items-center justify-between mb-4">
-            <span className="text-sm">Cache Hits</span>
-            <span className="font-medium text-primary">{contextData.cacheHits}</span>
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            <div className="bg-background rounded-lg p-3 border border-border/50">
+              <div className="text-xl font-semibold text-textMain tabular-nums">{contextData.sources.length}</div>
+              <div className="text-xs text-textMuted mt-0.5">documents referenced</div>
+            </div>
+            <div className="bg-background rounded-lg p-3 border border-border/50">
+              <div className="text-xl font-semibold text-textMain tabular-nums">{contextData.cacheHits}</div>
+              <div className="text-xs text-textMuted mt-0.5">answers reused from cache</div>
+            </div>
           </div>
           {contextData.sources.length > 0 && (
             <ConfidenceChart data={contextData.sources.map(s => ({ title: s.title, score: s.score ?? 0 }))} />
@@ -604,7 +697,7 @@ export default function App() {
 
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold text-textMuted uppercase tracking-wider">Cached Sources</h3>
+            <h3 className="text-xs font-semibold text-textMuted uppercase tracking-wider">Documents referenced</h3>
             {contextData.sources.length > 0 && (
               <button 
                 onClick={clearKVContext}

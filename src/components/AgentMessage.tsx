@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { ExternalLink, ShieldAlert, ThumbsUp, ThumbsDown, Copy, Check } from 'lucide-react';
+import { ShieldAlert, ThumbsUp, ThumbsDown, Copy, Check } from 'lucide-react';
 import { ChatMessage } from '../types';
 import { cn } from '../lib/utils';
 import { ReasoningVisualization } from './ReasoningVisualization';
+import { SourceList } from './SourceList';
 
 export function AgentMessage({ message, onStreamComplete, onFeedback }: { message: ChatMessage, onStreamComplete?: (id: string) => void, onFeedback?: (id: string, rating: 'up' | 'down' | null) => void }) {
   const [feedback, setFeedback] = useState<'up' | 'down' | null>(message.feedback || null);
@@ -69,39 +70,8 @@ export function AgentMessage({ message, onStreamComplete, onFeedback }: { messag
           <ReactMarkdown>{displayedContent}</ReactMarkdown>
         </div>
 
-        {/* Citations Strip — cited-in-answer sources are solid, retrieved-
-            but-not-cited ones are visually secondary but still shown, since
-            "what did the model see but choose not to use" is real
-            transparency too, not something to hide. */}
         {message.citations && message.citations.length > 0 && displayedContent.length >= message.content.length && (
-          <div className="mt-6">
-            <div className="text-[10px] uppercase tracking-wider text-textMuted mb-3 font-semibold">
-              Sources {message.citations.some(c => c.cited) && `(${message.citations.filter(c => c.cited).length} cited, ${message.citations.length} retrieved)`}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {message.citations.map((cit, idx) => (
-                <a
-                  key={idx}
-                  href={cit.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={cit.snippet}
-                  className={cn(
-                    "inline-flex items-center gap-2 px-3 py-1.5 rounded-full border transition-colors text-xs group",
-                    cit.cited === false
-                      ? "border-border/40 text-textMuted hover:bg-surfaceHover hover:text-textMain"
-                      : "border-border/80 text-textMain hover:bg-surfaceHover"
-                  )}
-                >
-                  {cit.title}
-                  {typeof cit.score === 'number' && (
-                    <span className="text-[9px] text-textMuted tabular-nums">{Math.round(cit.score * 100)}%</span>
-                  )}
-                  <ExternalLink size={12} className="text-textMuted group-hover:text-textMain" />
-                </a>
-              ))}
-            </div>
-          </div>
+          <SourceList sources={message.citations} />
         )}
 
         {/* Bottom Actions Row: Reasoning Trace Toggle & Feedback */}

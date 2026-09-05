@@ -143,7 +143,10 @@ export function validateBody(schema) {
 export const chatBodySchema = z.object({
   message: z.string().min(1).max(config.MAX_MESSAGE_LENGTH),
   thread_id: z.string().uuid().optional(),
-  model: z.string().max(40).optional(),
+  // Long enough for a qualified selection like
+  // "OpenRouter::nvidia/nemotron-3-super-120b-a12b:free" — provider ids
+  // alone fit in far less, but pinning a specific model needs the room.
+  model: z.string().max(120).optional(),
   persona: z.enum(['concise', 'formal', 'creative']).optional(),
   systemPrompt: z.string().max(config.MAX_SYSTEM_PROMPT_LENGTH).optional(),
 }).strict();

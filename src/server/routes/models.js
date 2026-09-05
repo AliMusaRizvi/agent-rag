@@ -4,6 +4,6 @@ import { listModels } from '../providers.js';
 // Gemini/OpenAI/Anthropic were shown as disabled "Coming Soon" even though
 // the Gemini backend path already worked — availability now reflects
 // whether the corresponding API key is actually configured.
-export function modelsHandler(req, res) {
-  res.json({ models: listModels() });
+export async function modelsHandler(req, res) {
+  res.json({ models: await listModels() });
 }

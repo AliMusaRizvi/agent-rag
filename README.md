@@ -263,17 +263,21 @@ hiding them:
 - **Reranking is LLM-based**, not a self-hosted cross-encoder — cheaper to
   run and good enough at this corpus size, but a dedicated reranker would
   win at larger scale. Swapping one in is isolated to `rerank.js`.
-- **Cloud free-tier rate limits are real, if you opt into a cloud
-  provider.** The default (Ollama) has none of this — it's the whole
-  reason it's the default. If you switch `EMBEDDING_PROVIDER` to
-  `gemini`, its free tier is 100 embedContent requests/minute;
-  `embeddings.js` backs off and retries, but a large ingestion run or a
-  burst of uploads can still take a while, and this project's own
-  extensive testing hit sustained exhaustion that a few minutes of
-  backoff couldn't clear (a daily cap, not just per-minute). Groq's chat
-  model catalog also turns over faster than most providers' — it dropped
-  Llama entirely at one point — the configured model ids were verified
-  live at build time; re-verify before deploying if it's been a while.
+- **Gemini's free embedding tier is capped at 1,000 requests per day, and
+  that caps the deployed corpus.** This is a hard daily ceiling (the API
+  rejects with `embed_content_free_tier_requests, limit: 1000`), not a
+  burst limit that backoff can wait out. At ~13 chunks per handbook page
+  — measured from a real run, 400 files → 5,159 chunks — one day's quota
+  buys roughly 75 pages, so `ingest.js` caps the Gemini path at 60 files
+  and the deployed demo indexes a deliberately smaller slice of the
+  handbook than a local Ollama run does. Expect the deployed instance to
+  refuse questions the local one answers. Lifting this means a paid
+  Gemini tier, a different embedding provider, or ingesting across
+  several days. The local default (Ollama) has no such ceiling, which is
+  the whole reason it's the default. Groq's chat model catalog also turns
+  over faster than most providers' — it dropped Llama entirely at one
+  point — the configured model ids were verified live at build time;
+  re-verify before deploying if it's been a while.
 - **Local inference is slower than a cloud API**, especially CPU-only.
   Each chat turn makes several LLM calls (router, grader, generator,
   groundedness check), so expect noticeably higher latency than the cloud

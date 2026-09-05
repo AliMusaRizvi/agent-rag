@@ -101,8 +101,112 @@ const registry = {
 // providers that only get tried if the user configured their own key.
 const FALLBACK_ORDER = ['Ollama', 'Groq', 'Gemini', 'OpenRouter', 'Anthropic', 'OpenAI'];
 
-export function listModels() {
-  return Object.entries(registry).map(([id, p]) => ({ id, label: p.label, available: p.available }));
+// A model selection is either a bare provider id ("Groq") or a provider
+// plus a specific model, separated by "::" — e.g.
+// "OpenRouter::nvidia/nemotron-3-super-120b-a12b:free". A two-character
+// separator is deliberate: OpenRouter's own ids already contain both "/"
+// and ":" (the ":free" suffix), so a single-character one couldn't be
+// split unambiguously.
+export function parseModelSelection(value) {
+  const raw = value || config.LLM_PROVIDER;
+  const idx = String(raw).indexOf('::');
+  if (idx === -1) return { providerId: normalizeModelType(raw), model: null };
+  return {
+    providerId: normalizeModelType(String(raw).slice(0, idx)),
+    model: String(raw).slice(idx + 2) || null,
+  };
+}
+
+// OpenRouter's free catalog changes as labs publish and retire models, so
+// this is fetched live rather than hardcoded — the same reason config.js
+// documents a re-verification command for the default. Cached because the
+// model picker asks on every page load and the catalog is ~hundreds of KB.
+// A fetch failure is not fatal: the picker simply falls back to offering
+// OpenRouter as a single entry using OPENROUTER_MODEL.
+const OPENROUTER_CATALOG_TTL_MS = 30 * 60 * 1000;
+let openRouterCache = { at: 0, models: [] };
+
+export async function listOpenRouterFreeModels() {
+  if (!config.OPENROUTER_API_KEY) return [];
+  if (Date.now() - openRouterCache.at < OPENROUTER_CATALOG_TTL_MS) return openRouterCache.models;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    const res = await fetch('https://openrouter.ai/api/v1/models', { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+
+    const models = (body.data || [])
+      .filter((m) => typeof m.id === 'string' && m.id.endsWith(':free'))
+      // withStructuredOutput() needs native tool-calling or JSON mode. A
+      // free model without either can chat but breaks every routing,
+      // grading and citation call in the graph, so it is not offered.
+      .filter((m) => {
+        const p = m.supported_parameters || [];
+        return p.includes('tools') || p.includes('response_format');
+      })
+      .map((m) => ({
+        id: `OpenRouter::${m.id}`,
+        label: (m.name || m.id).replace(/\s*\(free\)\s*$/i, ''),
+        available: true,
+        provider: 'OpenRouter',
+        contextLength: m.context_length ?? null,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+    openRouterCache = { at: Date.now(), models };
+    return models;
+  } catch (err) {
+    logger.warn({ err: err.message }, 'Could not fetch OpenRouter free-model catalog — offering the configured default only');
+    return openRouterCache.models; // possibly stale, possibly empty; both are fine
+  }
+}
+
+// Ollama needs a reachable server rather than a key, so unlike every other
+// provider its availability can't be answered from config alone. The
+// picker previously advertised it as available unconditionally, which on a
+// deployment with no Ollama (Render, Railway) offered users a model that
+// could only ever fail over to something else. Probed here with a short
+// timeout and a brief cache, so the list reflects reality without adding a
+// blocking check to boot.
+const OLLAMA_PROBE_TTL_MS = 60 * 1000;
+let ollamaProbe = { at: 0, reachable: false };
+
+export async function isOllamaReachable() {
+  if (Date.now() - ollamaProbe.at < OLLAMA_PROBE_TTL_MS) return ollamaProbe.reachable;
+  let reachable = false;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_000);
+    const res = await fetch(`${config.OLLAMA_BASE_URL}/api/tags`, { signal: controller.signal });
+    clearTimeout(timer);
+    reachable = res.ok;
+  } catch {
+    reachable = false;
+  }
+  ollamaProbe = { at: Date.now(), reachable };
+  return reachable;
+}
+
+export async function listModels() {
+  const [freeOpenRouter, ollamaUp] = await Promise.all([
+    listOpenRouterFreeModels(),
+    isOllamaReachable(),
+  ]);
+
+  const providers = Object.entries(registry).map(([id, p]) => ({
+    id,
+    label: p.label,
+    available: id === 'Ollama' ? ollamaUp : p.available,
+    provider: id,
+    // The bare OpenRouter entry means "use OPENROUTER_MODEL"; the
+    // per-model entries below let a caller pin a specific one.
+    contextLength: null,
+  }));
+
+  return [...providers, ...freeOpenRouter];
 }
 
 export function isAvailable(modelType) {
@@ -119,9 +223,8 @@ function normalizeModelType(modelType) {
   return modelType;
 }
 
-function chatModel(modelType, opts) {
-  const id = normalizeModelType(modelType);
-  const entry = registry[id];
+function chatModel(providerId, opts) {
+  const entry = registry[providerId];
   if (!entry || !entry.available) return null;
   return entry.build(opts);
 }
@@ -137,15 +240,23 @@ function fastOpts(providerId, fast) {
 // This replaces a hardcoded two-provider ping-pong (Groq<->Gemini) with a
 // real chain — with Ollama in the mix as a third (now primary) option,
 // a fixed pair no longer covers every "which one failed" case.
+//
+// When the caller pinned a specific model (e.g. a particular OpenRouter
+// free model), that exact model is used for the FIRST attempt only. The
+// fallbacks stay on each provider's own configured default, because a
+// model id is meaningless outside the provider that serves it — asking
+// Groq for "nvidia/nemotron-...:free" would just fail a second time.
 function buildAttempts(modelType, { fast } = {}) {
-  const primaryId = normalizeModelType(modelType);
+  const { providerId, model: pinned } = parseModelSelection(modelType);
   const seen = new Set();
   const attempts = [];
 
-  for (const id of [primaryId, ...FALLBACK_ORDER]) {
+  for (const id of [providerId, ...FALLBACK_ORDER]) {
     if (seen.has(id) || !isAvailable(id)) continue;
     seen.add(id);
-    attempts.push({ id, model: chatModel(id, fastOpts(id, fast)) });
+    const isPrimary = id === providerId;
+    const opts = isPrimary && pinned ? { model: pinned } : fastOpts(id, fast);
+    attempts.push({ id, model: chatModel(id, opts) });
   }
   return attempts;
 }

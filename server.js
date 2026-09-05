@@ -14,7 +14,7 @@ import {
   validateBody, chatBodySchema, approveBodySchema, feedbackBodySchema,
   notFoundHandler, errorHandler, wrapAsync,
 } from './src/server/security.js';
-import { chatHandler } from './src/server/routes/chat.js';
+import { chatHandler, chatStreamHandler } from './src/server/routes/chat.js';
 import { approveHandler } from './src/server/routes/approve.js';
 import { feedbackHandler } from './src/server/routes/feedback.js';
 import { upload, uploadHandler } from './src/server/routes/upload.js';
@@ -62,10 +62,11 @@ async function main() {
   // anonymous session cookie (tenant scoping, approval ownership), rate
   // limiting, and input validation — see security.js and routes/approve.js.
   app.post('/chat', chatLimiter, validateBody(chatBodySchema), wrapAsync(chatHandler));
+  app.post('/chat/stream', chatLimiter, validateBody(chatBodySchema), wrapAsync(chatStreamHandler));
   app.post('/approve-tool', validateBody(approveBodySchema), wrapAsync(approveHandler));
   app.post('/api/feedback', validateBody(feedbackBodySchema), wrapAsync(feedbackHandler));
   app.post('/api/upload', uploadLimiter, upload.single('file'), wrapAsync(uploadHandler));
-  app.get('/api/models', modelsHandler);
+  app.get('/api/models', wrapAsync(modelsHandler));
   app.post('/api/clear-cache', (req, res) => res.json({ success: true, cleared: clearCache(req.sessionId) }));
   app.post('/ingest', requireApiKey, wrapAsync(ingestHandler));
   app.get('/api/audit', requireApiKey, wrapAsync(auditHandler));

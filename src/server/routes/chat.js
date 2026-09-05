@@ -87,53 +87,8 @@ function verdictFor(finalState) {
   return 'Verified by LangGraph checks';
 }
 
-export async function chatHandler(req, res) {
-  const start = Date.now();
-  const { message, thread_id, model, persona, systemPrompt } = req.body;
-  const threadId = thread_id || randomUUID();
-  const tenantId = req.sessionId;
-  const modelType = normalizeModelType(model || config.LLM_PROVIDER);
-
-  const usage = await getSessionTokenUsage(tenantId);
-  if (usage >= config.DAILY_TOKEN_BUDGET_PER_SESSION) {
-    return res.status(429).json({ error: 'Daily usage limit reached for this session. Try again tomorrow.' });
-  }
-
-  const cacheParams = { tenantId, modelType, persona: persona || 'concise', systemPrompt, query: message };
-  const cached = getCached(cacheParams);
-  if (cached) {
-    req.log.info({ threadId }, 'Answer cache hit');
-    return res.json({ ...cached, thread_id: threadId, cached: true });
-  }
-
-  const graph = getGraph();
-  const graphConfig = { configurable: { thread_id: threadId } };
-
-  const inputs = {
-    messages: [{ role: 'user', content: message }],
-    modelType,
-    persona: persona || 'concise',
-    systemPrompt: systemPrompt || '',
-    tenantId,
-  };
-
-  const result = await graph.invoke(inputs, graphConfig);
-
-  if (result[INTERRUPT]?.length) {
-    const payload = result[INTERRUPT][0].value;
-    await writeAuditRow({
-      requestId: req.id,
-      threadId,
-      tenantId,
-      route: 'tool',
-      query: redactPII(message).redacted,
-      pendingTool: payload,
-      latencyMs: Date.now() - start,
-    });
-    return res.json({ thread_id: threadId, requires_approval: true, pending_tool_args: payload });
-  }
-
-  const responsePayload = {
+function buildResponsePayload(result, modelType) {
+  return {
     response: result.answer,
     requires_approval: false,
     sources: buildSources(result.retrievedDocs, result.citations),
@@ -146,7 +101,13 @@ export async function chatHandler(req, res) {
     graphTrace: buildGraphTrace(result),
     modelUsed: actualModelUsed(result, modelType),
   };
+}
 
+// Everything that has to happen after a turn produces an answer, regardless
+// of whether it was served by the blocking or the streaming route: the
+// audit row, the token charge, and the cache write. Shared so the two
+// routes can't drift apart on which of these they remember to do.
+async function finalizeTurn({ req, result, threadId, tenantId, message, start, cacheParams, responsePayload }) {
   await writeAuditRow({
     requestId: req.id,
     threadId,
@@ -177,6 +138,140 @@ export async function chatHandler(req, res) {
   if (!result.refused && !result.unverified) {
     setCached(cacheParams, responsePayload);
   }
+}
 
+function turnSetup(req) {
+  const { message, thread_id, model, persona, systemPrompt } = req.body;
+  const threadId = thread_id || randomUUID();
+  const tenantId = req.sessionId;
+  const modelType = normalizeModelType(model || config.LLM_PROVIDER);
+  return {
+    message,
+    threadId,
+    tenantId,
+    modelType,
+    graphConfig: { configurable: { thread_id: threadId } },
+    cacheParams: { tenantId, modelType, persona: persona || 'concise', systemPrompt, query: message },
+    inputs: {
+      messages: [{ role: 'user', content: message }],
+      modelType,
+      persona: persona || 'concise',
+      systemPrompt: systemPrompt || '',
+      tenantId,
+    },
+  };
+}
+
+export async function chatHandler(req, res) {
+  const start = Date.now();
+  const { message, threadId, tenantId, modelType, graphConfig, cacheParams, inputs } = turnSetup(req);
+
+  const usage = await getSessionTokenUsage(tenantId);
+  if (usage >= config.DAILY_TOKEN_BUDGET_PER_SESSION) {
+    return res.status(429).json({ error: 'Daily usage limit reached for this session. Try again tomorrow.' });
+  }
+
+  const cached = getCached(cacheParams);
+  if (cached) {
+    req.log.info({ threadId }, 'Answer cache hit');
+    return res.json({ ...cached, thread_id: threadId, cached: true });
+  }
+
+  const result = await getGraph().invoke(inputs, graphConfig);
+
+  if (result[INTERRUPT]?.length) {
+    const payload = result[INTERRUPT][0].value;
+    await writeAuditRow({
+      requestId: req.id,
+      threadId,
+      tenantId,
+      route: 'tool',
+      query: redactPII(message).redacted,
+      pendingTool: payload,
+      latencyMs: Date.now() - start,
+    });
+    return res.json({ thread_id: threadId, requires_approval: true, pending_tool_args: payload });
+  }
+
+  const responsePayload = buildResponsePayload(result, modelType);
+  await finalizeTurn({ req, result, threadId, tenantId, message, start, cacheParams, responsePayload });
   return res.json({ ...responsePayload, thread_id: threadId });
+}
+
+// Server-Sent Events variant of the same turn. Identical pipeline and
+// identical final payload — the difference is that each graph node emits an
+// event the moment it finishes, so the UI can show what the agent is
+// actually doing instead of a spinner that means nothing. The node names
+// and details streamed here are the real ones the graph recorded (the same
+// data the execution-path panel renders after the fact), not a scripted
+// or estimated progress sequence.
+export async function chatStreamHandler(req, res) {
+  const start = Date.now();
+  const { message, threadId, tenantId, modelType, graphConfig, cacheParams, inputs } = turnSetup(req);
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    // Render/Cloudflare and nginx-style proxies buffer responses by
+    // default, which would hold every event until the stream closed and
+    // defeat the entire point. This opts that off.
+    'X-Accel-Buffering': 'no',
+  });
+  const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+
+  try {
+    const usage = await getSessionTokenUsage(tenantId);
+    if (usage >= config.DAILY_TOKEN_BUDGET_PER_SESSION) {
+      send({ type: 'error', error: 'Daily usage limit reached for this session. Try again tomorrow.' });
+      return res.end();
+    }
+
+    const cached = getCached(cacheParams);
+    if (cached) {
+      req.log.info({ threadId }, 'Answer cache hit');
+      send({ type: 'done', payload: { ...cached, thread_id: threadId, cached: true } });
+      return res.end();
+    }
+
+    // streamMode 'updates' yields { [nodeName]: stateUpdate } as each node
+    // completes. That gives progress but not the accumulated final state,
+    // which getState() below retrieves once the run finishes.
+    for await (const chunk of await getGraph().stream(inputs, { ...graphConfig, streamMode: 'updates' })) {
+      for (const [node, update] of Object.entries(chunk)) {
+        if (node === INTERRUPT) continue;
+        const step = update?.trace?.[update.trace.length - 1];
+        send({ type: 'node', node, detail: step?.detail ?? null });
+      }
+    }
+
+    const snapshot = await getGraph().getState(graphConfig);
+    const result = snapshot.values;
+    const pendingInterrupt = snapshot.tasks?.find((t) => t.interrupts?.length)?.interrupts?.[0]?.value;
+
+    if (pendingInterrupt) {
+      await writeAuditRow({
+        requestId: req.id,
+        threadId,
+        tenantId,
+        route: 'tool',
+        query: redactPII(message).redacted,
+        pendingTool: pendingInterrupt,
+        latencyMs: Date.now() - start,
+      });
+      send({ type: 'done', payload: { thread_id: threadId, requires_approval: true, pending_tool_args: pendingInterrupt } });
+      return res.end();
+    }
+
+    const responsePayload = buildResponsePayload(result, modelType);
+    await finalizeTurn({ req, result, threadId, tenantId, message, start, cacheParams, responsePayload });
+    send({ type: 'done', payload: { ...responsePayload, thread_id: threadId } });
+    return res.end();
+  } catch (err) {
+    logger.error({ err }, 'Streaming chat turn failed');
+    // Headers are already sent by this point, so the normal error handler
+    // can't produce a status code — report it in-band instead.
+    send({ type: 'error', error: config.isProduction ? 'Something went wrong on our end.' : err.message });
+    return res.end();
+  }
 }

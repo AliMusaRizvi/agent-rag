@@ -1,60 +1,11 @@
 import { useState } from 'react';
-import {
-  Route, Search, ListFilter, ScaleIcon, RefreshCw, Sparkles, BadgeCheck,
-  ShieldCheck, ShieldAlert, MessageCircle, Ban, FileEdit, Send, ChevronDown,
-} from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { GraphTrace, GraphTraceStep } from '../types';
 import { cn } from '../lib/utils';
+import { nodeMeta, nodeHeadline } from '../lib/graphNodes';
 
 interface ExecutionGraphProps {
   graphTrace: GraphTrace;
-}
-
-const NODE_META: Record<string, { label: string; icon: typeof Route }> = {
-  router: { label: 'Route', icon: Route },
-  retrieve: { label: 'Retrieve', icon: Search },
-  rerank: { label: 'Rerank', icon: ListFilter },
-  grade: { label: 'Grade context', icon: ScaleIcon },
-  rewriteQuery: { label: 'Rewrite query', icon: RefreshCw },
-  generate: { label: 'Generate', icon: Sparkles },
-  verifyCitations: { label: 'Verify citations', icon: BadgeCheck },
-  checkGroundedness: { label: 'Check groundedness', icon: ShieldCheck },
-  incrementRegenerate: { label: 'Regenerate', icon: RefreshCw },
-  markUnverified: { label: 'Mark unverified', icon: ShieldAlert },
-  refusal: { label: 'Refuse', icon: ShieldAlert },
-  blocked: { label: 'Blocked', icon: Ban },
-  chatReply: { label: 'Reply', icon: MessageCircle },
-  prepareTool: { label: 'Prepare action', icon: FileEdit },
-  executeTool: { label: 'Execute action', icon: Send },
-};
-
-// Real, node-specific detail worth surfacing at a glance — pulled straight
-// from what that node actually wrote to state, not a generic re-statement
-// of the node name.
-function stepHeadline(step: GraphTraceStep): string | null {
-  const d = step.detail as Record<string, any>;
-  switch (step.node) {
-    case 'router':
-      return `→ ${d.route}${d.modelUsed ? ` · ${d.modelUsed}` : ''}`;
-    case 'retrieve':
-      return `${d.candidates} candidates`;
-    case 'rerank':
-      return d.topScore != null ? `top score ${(d.topScore * 100).toFixed(0)}%` : `kept ${d.kept}`;
-    case 'grade':
-      return d.sufficient ? 'sufficient' : 'insufficient';
-    case 'rewriteQuery':
-      return d.rewritten ? `"${d.rewritten}"` : null;
-    case 'generate':
-      return d.modelUsed || null;
-    case 'verifyCitations':
-      return d.dropped > 0 ? `${d.kept} kept, ${d.dropped} dropped` : `${d.kept} verified`;
-    case 'checkGroundedness':
-      return d.grounded ? 'grounded' : 'not grounded';
-    case 'executeTool':
-      return d.approved ? (d.result?.success ? 'created' : 'failed') : 'denied';
-    default:
-      return null;
-  }
 }
 
 function StepDetail({ step }: { step: GraphTraceStep }) {
@@ -87,9 +38,9 @@ export function ExecutionGraph({ graphTrace }: ExecutionGraphProps) {
     <div className="w-full">
       <div className="flex items-center gap-1.5 overflow-x-auto pb-2 custom-scrollbar">
         {graphTrace.steps.map((step, idx) => {
-          const meta = NODE_META[step.node] || { label: step.node, icon: Route };
+          const meta = nodeMeta(step.node);
           const Icon = meta.icon;
-          const headline = stepHeadline(step);
+          const headline = nodeHeadline(step.node, step.detail as Record<string, unknown>);
           const isLoopRepeat = graphTrace.steps.findIndex((s) => s.node === step.node) !== idx;
           const isOpen = openIndex === idx;
           return (
@@ -122,7 +73,7 @@ export function ExecutionGraph({ graphTrace }: ExecutionGraphProps) {
         <div className="mt-2 p-3 rounded-lg bg-surface/50 border border-border/50 text-xs animate-in fade-in slide-in-from-top-1 duration-150">
           <div className="flex items-center justify-between mb-2">
             <span className="font-semibold text-textMain">
-              {(NODE_META[graphTrace.steps[openIndex].node] || { label: graphTrace.steps[openIndex].node }).label}
+              {nodeMeta(graphTrace.steps[openIndex].node).label}
             </span>
             <button onClick={() => setOpenIndex(null)} className="text-textMuted hover:text-textMain">
               <ChevronDown size={14} className="rotate-180" />

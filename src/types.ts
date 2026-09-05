@@ -55,9 +55,11 @@ export interface ChatMessage {
 }
 
 export interface ModelInfo {
-  id: string;
+  id: string;          // "Groq", or a pinned "OpenRouter::<model id>"
   label: string;
   available: boolean;
+  provider?: string;   // which provider serves it — used to group the picker
+  contextLength?: number | null;
 }
 
 export interface ChatThread {
