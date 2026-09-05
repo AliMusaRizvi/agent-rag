@@ -3,14 +3,33 @@ import helmet from 'helmet';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
-import { config } from './config.js';
+import { config, normalizeOrigin } from './config.js';
 
 // --- CORS: explicit allowlist, not app.use(cors()) open-to-the-world. ---
+//
+// A disallowed origin resolves to "don't set CORS headers" — NOT an
+// error. Passing an Error here (the previous behavior) propagates to
+// errorHandler and answers with a 500, and because this middleware runs
+// before express.static, that 500 hits *every* request including the
+// HTML shell and the JS/CSS bundle — one wrong entry in ALLOWED_ORIGINS
+// takes the entire site down, not just cross-origin API access.
+//
+// That is not hypothetical: it happened in production here. ALLOWED_ORIGINS
+// was set to the site's own URL *with a trailing slash*, browsers send
+// Origin without one (it is scheme+host+port, never a path), so nothing
+// matched and every asset returned a 500 with a JSON body — which the
+// browser reported as the confusing "MIME type ('application/json') is not
+// a supported stylesheet MIME type". curl hid it completely, since it sends
+// no Origin header at all and so took the early-return branch below.
+//
+// Answering callback(null, false) is both correct and safe: the browser
+// still blocks genuine cross-origin reads (no Access-Control-Allow-Origin
+// comes back), while same-origin requests — which need no CORS headers —
+// keep working regardless of how ALLOWED_ORIGINS is configured.
 export const corsMiddleware = cors({
   origin(origin, callback) {
     if (!origin) return callback(null, true); // same-origin / curl / server-to-server health checks
-    if (config.allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error(`Origin ${origin} is not allowed`));
+    return callback(null, config.allowedOrigins.includes(normalizeOrigin(origin)));
   },
   credentials: true,
 });

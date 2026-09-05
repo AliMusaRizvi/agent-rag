@@ -162,6 +162,16 @@ if (env.LLM_PROVIDER !== 'Ollama' && !hasAnyCloudProvider) {
   process.exit(1);
 }
 
+// An Origin header is scheme + host + port only — never a trailing slash,
+// never a path. People routinely paste their site's URL (with the slash a
+// browser address bar shows) into ALLOWED_ORIGINS, which then matches
+// nothing. Normalizing both sides of the comparison makes that harmless
+// instead of site-breaking; see the note on corsMiddleware in security.js
+// for what it used to cost.
+export function normalizeOrigin(value) {
+  return String(value).trim().replace(/\/+$/, '').toLowerCase();
+}
+
 const geminiKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY || null;
 
 if (env.EMBEDDING_PROVIDER === 'gemini' && !geminiKey) {
@@ -175,7 +185,7 @@ export const config = {
   geminiKey,
   isProduction: env.NODE_ENV === 'production',
   allowedOrigins: env.ALLOWED_ORIGINS
-    ? env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+    ? env.ALLOWED_ORIGINS.split(',').map(normalizeOrigin).filter(Boolean)
     : ['http://localhost:3000', 'http://localhost:5173'],
   hasGithubTool: Boolean(env.GITHUB_TOKEN && env.GITHUB_REPO),
   hasPostgres: Boolean(env.POSTGRES_URL),
