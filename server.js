@@ -76,6 +76,22 @@ async function main() {
 
   // Static frontend
   app.use(express.static(path.join(__dirname, 'dist')));
+
+  // A request under /assets that express.static didn't resolve is a
+  // missing file, never a client-side route — /assets is exclusively
+  // Vite's hashed build output. Without this, such requests fall through
+  // to the SPA catch-all below and get index.html back under a 200, so a
+  // browser that asked for JS/CSS receives HTML and fails with an opaque
+  // MIME-type error instead of a plain "it's not there".
+  //
+  // This is not hypothetical: every deploy changes the content hash in
+  // each asset's filename, so any browser still holding the previous
+  // index.html requests that build's now-deleted bundle. Diagnosing it
+  // from the outside sent one reviewer to entirely the wrong conclusion
+  // (a supposed static-middleware ordering bug — the ordering here is in
+  // fact correct, which is exactly why the miss reaches the catch-all).
+  app.use('/assets', (req, res) => res.sendStatus(404));
+
   app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
   app.use(errorHandler);
