@@ -13,7 +13,31 @@
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f766e'/%3E%3Cline x1='16' y1='9' x2='9' y2='21' stroke='white' stroke-width='1.6'/%3E%3Cline x1='16' y1='9' x2='23' y2='21' stroke='white' stroke-width='1.6'/%3E%3Cline x1='9' y1='21' x2='23' y2='21' stroke='white' stroke-width='1.6'/%3E%3Ccircle cx='16' cy='9' r='3.4' fill='white'/%3E%3Ccircle cx='9' cy='21' r='3.4' fill='white'/%3E%3Ccircle cx='23' cy='21' r='3.4' fill='white'/%3E%3C/svg%3E" />
   </head>
   <body class="bg-background text-textMain min-h-screen">
-    <div id="root"></div>
+    <noscript>
+      <div style="padding:2rem;text-align:center;font-family:system-ui,sans-serif;">
+        This app requires JavaScript. Please enable it and reload.
+      </div>
+    </noscript>
+    <!--
+      A static placeholder shown before React takes over — replaces the
+      previous silent blank page. React's createRoot().render() in
+      main.tsx replaces this content the moment it successfully mounts, so
+      this is purely a "something is happening" signal for whatever gap
+      exists between the browser receiving this HTML and the JS bundle
+      finishing load + execution. That gap is normally sub-second, but on
+      this project's free-tier hosting the instance can cold-start after
+      being idle — verified live: a cold request took 33s where a warm one
+      took under 1s — so the 8-second fallback message below specifically
+      names that as the likely cause instead of leaving an unexplained
+      spinner (or, before this existed, an unexplained blank page).
+    -->
+    <div id="root">
+      <div id="boot-fallback" style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:14px;font-family:system-ui,sans-serif;color:#888;">
+        <div style="width:28px;height:28px;border:3px solid #ccc;border-top-color:#0d9488;border-radius:50%;animation:boot-spin 0.8s linear infinite;"></div>
+        <span id="boot-fallback-text">Loading…</span>
+      </div>
+    </div>
+    <style>@keyframes boot-spin { to { transform: rotate(360deg); } }</style>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
