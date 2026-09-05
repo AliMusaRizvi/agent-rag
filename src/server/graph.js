@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { StateGraph, END, START, interrupt, Command, INTERRUPT } from '@langchain/langgraph';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { hybridSearch } from './vectorstore.js';
+import { hybridSearch, getCorpusSize } from './vectorstore.js';
 import { rerank } from './rerank.js';
 import { invokeStructured, invokeChat } from './providers.js';
 import { bestScoreBelowFloor, verifyCitations, screenForInjection, truncate } from './guardrails.js';
@@ -35,6 +35,8 @@ const graphState = {
   toolIntent: { value: (_x, y) => y, default: () => null },
 
   retrievedDocs: { value: (_x, y) => y, default: () => [] },
+  retrievalError: { value: (_x, y) => y, default: () => null },
+  corpusEmpty: { value: (_x, y) => y, default: () => false },
   rewriteCount: { value: (_x, y) => y, default: () => 0 },
   graderVerdict: { value: (_x, y) => y, default: () => null },
 
@@ -175,12 +177,50 @@ async function chatReplyNode(state) {
 // Retrieval: hybrid dense+BM25 (vectorstore.js) -> LLM rerank (rerank.js).
 // ---------------------------------------------------------------------------
 
+// Retrieval is the one step that can't degrade to "answer anyway" — with
+// no passages there is nothing to ground an answer in. It can still fail
+// for reasons that have nothing to do with the question: hybridSearch has
+// to embed the query first, and a rate-limited or exhausted embedding
+// quota makes that throw.
+//
+// Every other LLM-calling node already catches its own failures; this one
+// didn't, so that throw propagated out of graph.invoke() and surfaced to
+// the user as an opaque "Something went wrong on our end." — verified in
+// production, where an exhausted Gemini free-tier embedding quota made
+// every single message fail that way with no indication of why. Catching
+// it here turns an unexplained error into an honest, specific refusal.
 async function retrieveNode(state) {
-  const docs = await hybridSearch(state.query, { k: 12, tenantId: state.tenantId });
-  return { retrievedDocs: docs, ...trace('retrieve', { query: state.query, candidates: docs.length }) };
+  // An empty index is not a failed search and not a bad question — no
+  // rewrite can conjure documents that were never ingested. Detected up
+  // front so the graph refuses honestly instead of running the full
+  // rewrite loop to arrive at "nothing specific enough", which would
+  // wrongly imply it searched something and found it wanting.
+  if (getCorpusSize() === 0) {
+    return {
+      retrievedDocs: [],
+      corpusEmpty: true,
+      ...trace('retrieve', { query: state.query, candidates: 0, corpusEmpty: true }),
+    };
+  }
+
+  try {
+    const docs = await hybridSearch(state.query, { k: 12, tenantId: state.tenantId });
+    return { retrievedDocs: docs, ...trace('retrieve', { query: state.query, candidates: docs.length }) };
+  } catch (err) {
+    logger.error({ err: err.message, query: state.query }, 'Retrieval failed — cannot search the knowledge base');
+    return {
+      retrievedDocs: [],
+      retrievalError: err.message,
+      ...trace('retrieve', { query: state.query, candidates: 0, error: err.message }),
+    };
+  }
 }
 
 async function rerankNode(state) {
+  // Nothing to rank, and rerank() would burn an LLM call establishing that.
+  if (state.retrievedDocs.length === 0) {
+    return { ...trace('rerank', { kept: 0, topScore: null, skipped: 'no candidates' }) };
+  }
   const top = await rerank(state.query, state.retrievedDocs, { topK: 5 });
   return { retrievedDocs: top, ...trace('rerank', { kept: top.length, topScore: top[0]?.rerankScore ?? null }) };
 }
@@ -216,6 +256,11 @@ async function gradeNode(state) {
 }
 
 function routeFromGrade(state) {
+  // Rewriting the query can fix a bad search. It cannot fix a search that
+  // never ran — retrying would just re-hit whatever broke (an exhausted
+  // embedding quota, an unreachable vector store) and spend LLM calls on
+  // rewrites that can't help. Refuse straight away and say so.
+  if (state.retrievalError || state.corpusEmpty) return 'refuse';
   if (state.graderVerdict?.sufficient) return 'sufficient';
   if (state.rewriteCount < config.MAX_REWRITES) return 'rewrite';
   return 'refuse';
@@ -245,6 +290,30 @@ async function rewriteQueryNode(state) {
 }
 
 async function refusalNode(state) {
+  // "I searched and found nothing good enough" and "I couldn't search at
+  // all" are different failures, and telling a user the first when the
+  // second happened sends them off rephrasing a question that was never
+  // the problem.
+  if (state.corpusEmpty) {
+    return {
+      refused: true,
+      refusalReason: 'Knowledge base is empty — ingestion has not been run.',
+      answer: "There's nothing in my knowledge base yet — the handbook hasn't been indexed on this instance, so I have no sources to answer from. This isn't about your question; an administrator needs to run the ingestion step first.",
+      citations: [],
+      ...trace('refusal', { reason: 'corpus empty' }),
+    };
+  }
+
+  if (state.retrievalError) {
+    return {
+      refused: true,
+      refusalReason: `Retrieval unavailable: ${state.retrievalError}`,
+      answer: "I couldn't search the knowledge base just now — the search service didn't respond, so I have no sources to answer from. This is a problem on my side, not with your question. Please try again in a moment.",
+      citations: [],
+      ...trace('refusal', { reason: 'retrieval unavailable', error: state.retrievalError }),
+    };
+  }
+
   return {
     refused: true,
     refusalReason: state.graderVerdict?.reason || 'No sufficiently relevant documentation found.',

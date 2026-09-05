@@ -214,6 +214,17 @@ async function denseSearch(queryVector, { k, tenantIds }) {
 // scores plus a fused relevance in 0..1 (the max possible RRF contribution
 // from two lists, so it's comparable across queries and safe to threshold).
 export async function hybridSearch(query, { k = 12, tenantId = GLOBAL_TENANT } = {}) {
+  // Nothing indexed at all — searching it cannot return anything, and
+  // embedding the query first would spend a request against a metered
+  // embedding quota to prove that. Relevant in practice: a freshly
+  // deployed instance serves traffic before its first ingestion run, and
+  // on the Gemini free tier those wasted calls come out of the same daily
+  // budget the ingestion itself needs.
+  if (getCorpusSize() === 0) {
+    logger.warn('Search attempted against an empty corpus — run ingestion before querying');
+    return [];
+  }
+
   const tenantIds = tenantId === GLOBAL_TENANT ? [GLOBAL_TENANT] : [GLOBAL_TENANT, tenantId];
   const queryVector = await embedQuery(query);
   const [denseResults, sparseResultsAll] = await Promise.all([
