@@ -40,7 +40,17 @@ export async function initVectorStore() {
   backend = resolveBackend();
 
   if (backend === 'qdrant') {
-    qdrantClient = new QdrantClient({ url: config.QDRANT_URL, apiKey: config.QDRANT_API_KEY });
+    // Only send the API key over a secure connection. A local Qdrant
+    // (http://localhost:6333, no auth configured) doesn't want one, and
+    // sending a real Qdrant Cloud key to it in plaintext is both pointless
+    // and a small credential-leak risk — the client itself warns "Api key
+    // is used with unsecure connection." for exactly this. Omitting it on
+    // http keeps local development quiet and cloud deployments unchanged.
+    const isSecure = config.QDRANT_URL.startsWith('https://');
+    qdrantClient = new QdrantClient({
+      url: config.QDRANT_URL,
+      ...(isSecure && config.QDRANT_API_KEY ? { apiKey: config.QDRANT_API_KEY } : {}),
+    });
     let collectionExisted = false;
     try {
       const exists = await qdrantClient.collectionExists(config.QDRANT_COLLECTION);
