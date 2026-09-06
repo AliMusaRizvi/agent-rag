@@ -41,6 +41,18 @@
 }
 
 @layer base {
+  /* The app is a fixed shell: a full-height row of sidebar + main column,
+     where only the message list scrolls. The document itself scrolling is
+     therefore always a bug — it slides the header off the top of the
+     screen — so it's pinned here rather than left to chance. Anything
+     that needs to escape this (modals, drawers) is position:fixed and
+     unaffected. */
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
+
   body {
     @apply antialiased bg-background text-textMain transition-colors duration-300;
   }

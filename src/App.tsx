@@ -102,7 +102,7 @@ export default function App() {
 
   const [threads, setThreads] = useState<ChatThread[]>(getInitialThreads);
 
-  const endOfMessagesRef = useRef<HTMLDivElement>(null);
+  const messageScrollRef = useRef<HTMLElement>(null);
 
   const handleReset = useCallback(() => {
     setMessages([]);
@@ -152,11 +152,19 @@ export default function App() {
     });
   }, [messages, threadId, selectedModel]);
 
+  // Scrolls the message list itself, deliberately NOT
+  // endOfMessagesRef.scrollIntoView(). scrollIntoView walks up and scrolls
+  // *every* scrollable ancestor — including the document — to bring the
+  // target to the top of the viewport. With the document even a few pixels
+  // scrollable, each new message dragged the entire app shell upward and
+  // clipped the header off the top of the screen. Scrolling this one
+  // container can only ever move this one container.
   useEffect(() => {
-    if (endOfMessagesRef.current && !chatSearchQuery) {
-      endOfMessagesRef.current.scrollIntoView({ behavior: 'smooth' });
+    const el = messageScrollRef.current;
+    if (el && !chatSearchQuery) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }
-  }, [messages, isLoading, chatSearchQuery]);
+  }, [messages, isLoading, liveSteps, chatSearchQuery]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -627,7 +635,7 @@ export default function App() {
         />
       </div>
 
-      <main className="flex-1 overflow-y-auto px-4 py-8 custom-scrollbar" onScroll={handleScroll}>
+      <main ref={messageScrollRef} className="flex-1 overflow-y-auto px-4 py-8 custom-scrollbar" onScroll={handleScroll}>
         <div className="max-w-[720px] mx-auto w-full flex flex-col gap-6 pb-4">
           {displayedMessages.length === 0 && chatSearchQuery ? (
             <div className="text-center text-textMuted py-8">No results found for "{chatSearchQuery}"</div>
@@ -654,7 +662,6 @@ export default function App() {
           {isLoading && !messages[messages.length - 1]?.isApprovalCard && !chatSearchQuery && (
             <LiveProgress steps={liveSteps} />
           )}
-          <div ref={endOfMessagesRef} />
         </div>
       </main>
 
