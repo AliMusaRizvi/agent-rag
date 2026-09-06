@@ -19,7 +19,7 @@ const RerankSchema = z.object({
   })),
 });
 
-export async function rerank(query, candidates, { topK = 5 } = {}) {
+export async function rerank(query, candidates, { topK = 5, modelType } = {}) {
   if (candidates.length === 0) return [];
   if (candidates.length === 1) return candidates.map((c) => ({ ...c, rerankScore: 1 }));
 
@@ -45,7 +45,7 @@ export async function rerank(query, candidates, { topK = 5 } = {}) {
   //     hybrid-search hit look exactly as "irrelevant" as everything else.
   let data;
   try {
-    ({ data } = await invokeStructured(config.LLM_PROVIDER, prompt, RerankSchema, { name: 'score_passages', fast: true }));
+    ({ data } = await invokeStructured(modelType || config.LLM_PROVIDER, prompt, RerankSchema, { name: 'score_passages', fast: true }));
   } catch (err) {
     logger.warn({ err: err.message }, 'Reranker call failed entirely — falling back to the fused hybrid-search order');
     return candidates.slice(0, topK).map((c) => ({ ...c, rerankScore: c.fusedScore ?? 0 }));

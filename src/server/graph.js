@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { StateGraph, END, START, interrupt, Command, INTERRUPT } from '@langchain/langgraph';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { hybridSearch, getCorpusSize } from './vectorstore.js';
+import { hybridSearch, getLiveCorpusSize } from './vectorstore.js';
 import { rerank } from './rerank.js';
 import { invokeStructured, invokeChat } from './providers.js';
 import { bestScoreBelowFloor, verifyCitations, screenForInjection, truncate } from './guardrails.js';
@@ -25,6 +25,14 @@ const graphState = {
   messages: { value: (x, y) => x.concat(y), default: () => [] },
   threadId: { value: (_x, y) => y, default: () => '' },
   tenantId: { value: (_x, y) => y, default: () => 'default' },
+  // The model the caller picked, defaulting to the server's configured
+  // provider when they didn't pick one. Every node that calls an LLM
+  // reads THIS, not config.LLM_PROVIDER — those two drifted apart once
+  // the UI gained a model picker: only generate honored the selection
+  // while router, grade, rewriteQuery, checkGroundedness and the reranker
+  // silently used the server default. Choosing a model in the UI then
+  // appeared to do nothing, because the execution trace kept reporting
+  // the default provider for every step but one.
   modelType: { value: (_x, y) => y, default: () => config.LLM_PROVIDER },
   persona: { value: (_x, y) => y, default: () => 'concise' },
   systemPrompt: { value: (_x, y) => y, default: () => '' },
@@ -112,7 +120,7 @@ async function routerNode(state) {
       ? `Conversation so far:\n${history.map((m) => `${m.role}: ${m.content}`).join('\n')}\n\n`
       : '';
     const { data, modelUsed } = await invokeStructured(
-      config.LLM_PROVIDER,
+      state.modelType,
       [
         [
           'system',
@@ -195,7 +203,7 @@ async function retrieveNode(state) {
   // front so the graph refuses honestly instead of running the full
   // rewrite loop to arrive at "nothing specific enough", which would
   // wrongly imply it searched something and found it wanting.
-  if (getCorpusSize() === 0) {
+  if (await getLiveCorpusSize() === 0) {
     return {
       retrievedDocs: [],
       corpusEmpty: true,
@@ -221,7 +229,7 @@ async function rerankNode(state) {
   if (state.retrievedDocs.length === 0) {
     return { ...trace('rerank', { kept: 0, topScore: null, skipped: 'no candidates' }) };
   }
-  const top = await rerank(state.query, state.retrievedDocs, { topK: 5 });
+  const top = await rerank(state.query, state.retrievedDocs, { topK: 5, modelType: state.modelType });
   return { retrievedDocs: top, ...trace('rerank', { kept: top.length, topScore: top[0]?.rerankScore ?? null }) };
 }
 
@@ -239,7 +247,7 @@ async function gradeNode(state) {
   const listing = state.retrievedDocs.map((d, i) => `[${i}] ${d.content.slice(0, 500)}`).join('\n\n');
   try {
     const { data, modelUsed } = await invokeStructured(
-      config.LLM_PROVIDER,
+      state.modelType,
       [
         ['system', 'Judge whether the passages below contain enough information to answer the question directly and specifically. Be strict: partial overlap on topic is not sufficient if the actual answer isn\'t present. If the question names a specific labeled concept (e.g. "core values"), a passage about a different, distinctly-named concept in the same source (e.g. "operating principles", "mission", "vision") is NOT sufficient just because it is topically related — company documentation often has several similarly-flavored but formally distinct concepts, and only a passage that actually matches the concept the question names counts as sufficient.'],
         ['human', `Question: ${state.query}\n\nPassages:\n${listing}`],
@@ -271,7 +279,7 @@ const RewriteSchema = z.object({ rewritten: z.string() });
 async function rewriteQueryNode(state) {
   try {
     const { data, modelUsed } = await invokeStructured(
-      config.LLM_PROVIDER,
+      state.modelType,
       [
         ['system', 'The previous search query did not retrieve enough relevant information. Rewrite it to be more specific and more likely to match how the target documentation is actually phrased. Search for the SAME concept the original question asks about — even if the grader\'s failure reason mentions a different, similarly-named concept it found instead, that is what to search AWAY from, not what to substitute in. Return only the rewritten query.'],
         ['human', `Original question: ${state.originalQuery}\nPrevious search query: ${state.query}\nWhy it failed: ${state.graderVerdict?.reason || 'insufficient context'}`],
@@ -433,7 +441,7 @@ async function checkGroundednessNode(state) {
   const contextBlock = state.retrievedDocs.map((d) => d.content).join('\n\n');
   try {
     const { data, modelUsed } = await invokeStructured(
-      config.LLM_PROVIDER,
+      state.modelType,
       [
         ['system', 'Compare the answer against the source passages. Flag any claim in the answer that is not directly supported by the passages. Minor rephrasing is fine; new facts, numbers, or names not present in the passages are not.'],
         ['human', `Passages:\n${contextBlock}\n\nAnswer to check:\n${state.answer}`],

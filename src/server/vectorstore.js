@@ -61,6 +61,23 @@ export async function initVectorStore() {
         });
         logger.info({ collection: config.QDRANT_COLLECTION }, 'Created Qdrant collection');
       }
+
+      // Every search filters on tenantId (see hybridSearch). Qdrant Cloud
+      // REFUSES to filter on an unindexed payload field — "Index required
+      // but not found for \"tenantId\"" — and returns 400 for the whole
+      // query. Self-hosted Qdrant allows it, so this passes every local
+      // test and then fails on literally every cloud query: the exact
+      // split that made a deployed instance answer "the search service
+      // didn't respond" while an identical local one worked perfectly.
+      //
+      // Creating it is idempotent, so this runs on every boot rather than
+      // only at collection creation — an existing collection from before
+      // this fix (or one built by an external ingestion) gets repaired
+      // instead of staying permanently broken.
+      await qdrantClient.createPayloadIndex(config.QDRANT_COLLECTION, {
+        field_name: 'tenantId',
+        field_schema: 'keyword',
+      });
     } catch (err) {
       logger.error({ err }, 'Qdrant configured but unreachable — falling back to the in-memory store for this run. Fix QDRANT_URL/QDRANT_API_KEY before deploying.');
       backend = 'memory';
@@ -220,7 +237,7 @@ export async function hybridSearch(query, { k = 12, tenantId = GLOBAL_TENANT } =
   // deployed instance serves traffic before its first ingestion run, and
   // on the Gemini free tier those wasted calls come out of the same daily
   // budget the ingestion itself needs.
-  if (getCorpusSize() === 0) {
+  if (await getLiveCorpusSize() === 0) {
     logger.warn('Search attempted against an empty corpus — run ingestion before querying');
     return [];
   }
@@ -282,6 +299,46 @@ export function listIngestedSources(tenantId = GLOBAL_TENANT) {
     if (rec.tenantId === tenantId && rec.metadata?.source) sources.add(rec.metadata.source);
   }
   return sources;
+}
+
+// getCorpusSize() below reports the size of THIS process's in-memory
+// sparse index, which is only rebuilt at boot or when this process itself
+// writes documents. That makes it wrong in a way that matters: ingestion
+// run from anywhere else — another instance, a local CLI run against the
+// same cloud cluster — leaves a live server insisting the corpus is empty
+// while Qdrant holds thousands of points. That exact mismatch produced a
+// deployed instance answering "the handbook hasn't been indexed" with 854
+// points sitting in the collection.
+//
+// This asks the database instead, cached briefly so it costs one cheap
+// count call per window rather than one per query. It also repairs the
+// stale sparse index when it notices a divergence, so BM25 stops missing
+// externally-added documents without needing a restart.
+const LIVE_COUNT_TTL_MS = 30_000;
+let liveCount = { at: 0, value: null };
+
+export async function getLiveCorpusSize() {
+  if (backend !== 'qdrant' || !qdrantClient) return getCorpusSize();
+  if (liveCount.value != null && Date.now() - liveCount.at < LIVE_COUNT_TTL_MS) return liveCount.value;
+
+  try {
+    const { count } = await qdrantClient.count(config.QDRANT_COLLECTION, { exact: false });
+    liveCount = { at: Date.now(), value: count };
+
+    if (count !== bm25.size) {
+      logger.warn(
+        { qdrantPoints: count, sparseIndexSize: bm25.size },
+        'Sparse index is out of step with the vector store (documents were written by another process) — rebuilding it',
+      );
+      await rebuildSparseIndex();
+    }
+    return count;
+  } catch (err) {
+    // A count failure must not fail the turn; the local index is a
+    // usable, if possibly stale, answer.
+    logger.warn({ err: err.message }, 'Could not read live corpus size — falling back to the local sparse index');
+    return getCorpusSize();
+  }
 }
 
 export function getCorpusSize() {

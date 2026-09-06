@@ -181,6 +181,15 @@ check, and which env vars need a value (`sync: false` — set the actual
 values in the dashboard's Environment tab, never commit them). Connect the
 repo, Render reads the blueprint automatically.
 
+> **Changing an env var in `render.yaml` later does not update the running
+> service.** Blueprint values are applied when the blueprint is first
+> synced; subsequent pushes deploy the new *code* but leave existing
+> environment variables at their old values. Editing `EMBEDDING_MODEL`
+> here and pushing therefore changes nothing on the deployed instance —
+> update it in the dashboard's Environment tab too (which also restarts
+> the service). This is easy to miss because nothing errors: the app just
+> keeps using the previous value.
+
 **Railway**: `railway.json` declares the Dockerfile build and health
 check. Railway doesn't read env vars from a committed file — connect the
 repo, then set the same variables listed above via the dashboard or
