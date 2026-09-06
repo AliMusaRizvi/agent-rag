@@ -19,7 +19,7 @@ import { approveHandler } from './src/server/routes/approve.js';
 import { feedbackHandler } from './src/server/routes/feedback.js';
 import { upload, uploadHandler } from './src/server/routes/upload.js';
 import { modelsHandler } from './src/server/routes/models.js';
-import { ingestHandler } from './src/server/routes/ingestRoute.js';
+import { ingestHandler, ingestStatusHandler } from './src/server/routes/ingestRoute.js';
 import { auditHandler } from './src/server/routes/audit.js';
 import { healthHandler, readyHandler } from './src/server/routes/health.js';
 import { clearCache } from './src/server/cache.js';
@@ -69,6 +69,7 @@ async function main() {
   app.get('/api/models', wrapAsync(modelsHandler));
   app.post('/api/clear-cache', (req, res) => res.json({ success: true, cleared: clearCache(req.sessionId) }));
   app.post('/ingest', requireApiKey, wrapAsync(ingestHandler));
+  app.get('/ingest/status', requireApiKey, ingestStatusHandler);
   app.get('/api/audit', requireApiKey, wrapAsync(auditHandler));
   app.get('/health', healthHandler);
   app.get('/ready', wrapAsync(readyHandler));

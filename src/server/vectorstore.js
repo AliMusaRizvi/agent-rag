@@ -272,6 +272,18 @@ export async function hybridSearch(query, { k = 12, tenantId = GLOBAL_TENANT } =
   return results;
 }
 
+// Which source documents already have chunks indexed for this tenant.
+// Lets ingestion skip work it has already paid for — essential when the
+// embedding provider enforces a hard daily cap and a full corpus needs
+// more than one day's budget to get through.
+export function listIngestedSources(tenantId = GLOBAL_TENANT) {
+  const sources = new Set();
+  for (const rec of chunkCache.values()) {
+    if (rec.tenantId === tenantId && rec.metadata?.source) sources.add(rec.metadata.source);
+  }
+  return sources;
+}
+
 export function getCorpusSize() {
   return backend === 'memory' ? memoryStore.length : bm25.size;
 }

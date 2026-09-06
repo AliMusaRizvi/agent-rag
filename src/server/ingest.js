@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
 import { logger } from './logger.js';
-import { addDocuments, initVectorStore, getCorpusSize, GLOBAL_TENANT } from './vectorstore.js';
+import { addDocuments, initVectorStore, getCorpusSize, listIngestedSources, GLOBAL_TENANT } from './vectorstore.js';
 
 // Real ingestion: crawl the actual handbook (paginated, not the first 100
 // tree entries truncated to 5 files), header-aware chunk each file instead
@@ -32,6 +32,10 @@ import { addDocuments, initVectorStore, getCorpusSize, GLOBAL_TENANT } from './v
 const DEFAULT_MAX_FILES = config.EMBEDDING_PROVIDER === 'ollama' ? 400 : 60;
 const MAX_FILES = Number(process.env.INGEST_MAX_FILES || DEFAULT_MAX_FILES);
 const CONCURRENCY = 6;
+// How many chunks get embedded and committed per write cycle. Small
+// enough that a quota wall costs at most this many chunks of wasted work,
+// large enough not to add meaningful per-batch overhead.
+const WRITE_BATCH_CHUNKS = 96;
 const MAX_CHUNK_CHARS = 1400;
 const CHUNK_OVERLAP = 150;
 // Verified against the live API (see config.js): GitLab's recursive tree
@@ -231,7 +235,25 @@ export async function ingest({ tenantId = GLOBAL_TENANT } = {}) {
     logger.info({ found: paths.length, ref }, 'Markdown files listed');
     if (paths.length === 0) throw new Error('GitLab tree API returned no markdown files');
 
-    const files = await mapWithConcurrency(paths, CONCURRENCY, async (path) => {
+    // Skip files this tenant already has chunks for. Re-embedding them
+    // would spend a metered daily quota reproducing rows that already
+    // exist — and on a corpus that needs more than one day's budget, that
+    // guarantees the run never advances past the same first N files.
+    // Skipping them makes repeated runs additive instead of repetitive.
+    const alreadyIngested = listIngestedSources(tenantId);
+    const pending = paths.filter((p) => !alreadyIngested.has(p));
+    if (alreadyIngested.size > 0) {
+      logger.info(
+        { alreadyIngested: alreadyIngested.size, pending: pending.length },
+        'Resuming ingestion — skipping documents already indexed',
+      );
+    }
+    if (pending.length === 0) {
+      logger.info({ alreadyIngested: alreadyIngested.size }, 'Nothing new to ingest — every listed document is already indexed');
+      return { chunksIndexed: 0, chunksAttempted: 0, corpusSize: getCorpusSize(), usedFallback: false, complete: true, upToDate: true };
+    }
+
+    const files = await mapWithConcurrency(pending, CONCURRENCY, async (path) => {
       const content = await fetchFileContent(repo, path, ref);
       return content ? { path, content } : null;
     });
@@ -254,9 +276,45 @@ export async function ingest({ tenantId = GLOBAL_TENANT } = {}) {
     chunks = FALLBACK_DOCS.map((d) => ({ content: d.pageContent, metadata: d.metadata }));
   }
 
-  const count = await addDocuments(chunks, { tenantId });
-  logger.info({ chunksIndexed: count, corpusSize: getCorpusSize() }, 'Ingestion complete');
-  return { chunksIndexed: count, corpusSize: getCorpusSize(), usedFallback: chunks.some((c) => c.metadata.fallback) };
+  // Write incrementally rather than embedding the whole corpus and
+  // upserting once at the end. addDocuments() embeds everything it is
+  // given before it writes anything, so a single call for the full corpus
+  // is all-or-nothing: hitting a quota wall at 90% discarded all 90% of
+  // the work already paid for. Against a hard daily embedding cap that is
+  // the difference between never finishing and finishing across a few
+  // runs — verified the bad way, on a run that burned most of a day's
+  // Gemini quota and indexed zero rows.
+  //
+  // Each slice is committed as it completes, so an interruption keeps
+  // everything up to that point, and skipAlreadyIngested() above means the
+  // next run picks up where this one stopped instead of redoing it.
+  let indexed = 0;
+  let failure = null;
+  for (let i = 0; i < chunks.length; i += WRITE_BATCH_CHUNKS) {
+    const slice = chunks.slice(i, i + WRITE_BATCH_CHUNKS);
+    try {
+      indexed += await addDocuments(slice, { tenantId });
+      logger.info({ indexed, total: chunks.length }, 'Ingestion progress');
+    } catch (err) {
+      // Keep what already landed and report honestly, rather than
+      // throwing away a partial corpus that is genuinely useful.
+      failure = err.message;
+      logger.error({ err: err.message, indexed, total: chunks.length }, 'Ingestion stopped early — keeping what was already indexed');
+      break;
+    }
+  }
+
+  const result = {
+    chunksIndexed: indexed,
+    chunksAttempted: chunks.length,
+    corpusSize: getCorpusSize(),
+    usedFallback: chunks.some((c) => c.metadata.fallback),
+    complete: !failure,
+    ...(failure ? { stoppedEarly: failure } : {}),
+  };
+  logger.info(result, failure ? 'Ingestion incomplete' : 'Ingestion complete');
+  if (indexed === 0 && failure) throw new Error(failure);
+  return result;
 }
 
 // CLI entry point: `npm run ingest`
