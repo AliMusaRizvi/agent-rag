@@ -32,10 +32,18 @@ import { addDocuments, initVectorStore, getCorpusSize, listIngestedSources, GLOB
 const DEFAULT_MAX_FILES = config.EMBEDDING_PROVIDER === 'ollama' ? 400 : 60;
 const MAX_FILES = Number(process.env.INGEST_MAX_FILES || DEFAULT_MAX_FILES);
 const CONCURRENCY = 6;
-// How many chunks get embedded and committed per write cycle. Small
-// enough that a quota wall costs at most this many chunks of wasted work,
-// large enough not to add meaningful per-batch overhead.
-const WRITE_BATCH_CHUNKS = 96;
+// How many chunks get embedded and committed per write cycle. Deliberately
+// matched to embeddings.js's GEMINI_BATCH (32), so one write cycle is one
+// embedding API call: the smallest unit that can succeed is also the
+// smallest unit that gets saved.
+//
+// This was 96, and that turned out to matter. On a near-exhausted daily
+// quota the first 96-chunk cycle never completed, so a run that had
+// genuinely embedded chunks still committed nothing and reported zero —
+// the exact all-or-nothing failure the incremental write was added to
+// prevent, just at a coarser granularity. At 32 the run banks progress as
+// fast as the provider will give it.
+const WRITE_BATCH_CHUNKS = 32;
 const MAX_CHUNK_CHARS = 1400;
 const CHUNK_OVERLAP = 150;
 // Verified against the live API (see config.js): GitLab's recursive tree

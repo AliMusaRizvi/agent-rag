@@ -80,7 +80,15 @@ const schema = z.object({
   // quota; 'gemini' is the paid-tier-adjacent option for anyone who does
   // have Gemini budget/quota (see embeddings.js for both implementations).
   EMBEDDING_PROVIDER: z.enum(['ollama', 'gemini']).default('ollama'),
-  EMBEDDING_MODEL: z.string().default('models/gemini-embedding-001'),
+  // Verified live: gemini-embedding-001, gemini-embedding-2 and
+  // gemini-embedding-2-preview are metered as separate free-tier budgets —
+  // with -001 returning 429 "limit: 1000" (its daily cap), -2 still
+  // answered 200. Both emit 3072 dimensions, so switching between them
+  // needs no EMBEDDING_DIM change and no collection rebuild. Whatever is
+  // set here must be the same model the corpus was embedded with; mixing
+  // them puts queries and documents in different vector spaces and
+  // quietly destroys retrieval quality rather than erroring.
+  EMBEDDING_MODEL: z.string().default('models/gemini-embedding-2'),
   // Must match whatever EMBEDDING_PROVIDER's model actually returns, or
   // every Qdrant write is silently rejected with a dimension-mismatch
   // error — this exact bug shipped once already (see vectorstore.js's

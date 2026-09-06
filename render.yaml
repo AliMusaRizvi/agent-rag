@@ -15,8 +15,14 @@ services:
         value: Groq
       - key: EMBEDDING_PROVIDER
         value: gemini
+      # gemini-embedding-2, not -001: the two are metered separately on the
+      # free tier, and -001's 1,000/day budget was exhausted. Same 3072
+      # dimensions, so EMBEDDING_DIM and any existing collection are
+      # unaffected. This MUST match whatever the corpus was embedded with —
+      # query and document vectors from different models occupy different
+      # spaces, and retrieval silently returns nonsense if they diverge.
       - key: EMBEDDING_MODEL
-        value: models/gemini-embedding-001
+        value: models/gemini-embedding-2
       - key: EMBEDDING_DIM
         value: "3072"
       - key: VECTOR_BACKEND
