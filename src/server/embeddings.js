@@ -193,8 +193,20 @@ async function geminiEmbedBatchWithValidation(embedder, texts, label) {
 // 100/min budget allows) keeps ingestion from tripping the limit on its
 // own — the empty-vector retry path above still exists for when other
 // traffic on the same key (or a lower real quota) eats into that budget.
-const GEMINI_BATCH_INTERVAL_MS = 650;
-const GEMINI_BATCH = 32;
+const GEMINI_BATCH_INTERVAL_MS = Number(process.env.GEMINI_BATCH_INTERVAL_MS || 650);
+
+// Batch size does NOT change how much quota a run consumes — every text is
+// one embedding either way. What it changes is how much work is lost when
+// a batch partially fails: the whole batch is retried and then abandoned,
+// so a large batch is all-or-nothing against a flaky quota.
+//
+// That matters at the end of a daily budget, where the API degrades to a
+// trickle rather than a clean stop: measured directly at ~60% success per
+// individual call, which means a 32-text batch essentially never completes
+// (0.6^32) and every attempt banks nothing, while an 8-text batch still
+// gets through often enough to make real progress. Tunable so a run can be
+// throttled down to drain the last of a quota instead of stalling on it.
+const GEMINI_BATCH = Number(process.env.GEMINI_BATCH || 32);
 
 async function geminiEmbedDocuments(texts) {
   const out = [];

@@ -43,7 +43,14 @@ const CONCURRENCY = 6;
 // the exact all-or-nothing failure the incremental write was added to
 // prevent, just at a coarser granularity. At 32 the run banks progress as
 // fast as the provider will give it.
-const WRITE_BATCH_CHUNKS = 32;
+// Must be <= the embedding provider's own batch size, or the smaller
+// embedding batches are pointless: the commit still needs this many
+// consecutive successes before anything is saved. Observed exactly that —
+// running with GEMINI_BATCH=8 against a nearly-drained quota, individual
+// calls were succeeding and whole rounds still banked zero, because each
+// commit was waiting on 32 of them. Keep them equal unless you have a
+// reason not to.
+const WRITE_BATCH_CHUNKS = Number(process.env.WRITE_BATCH_CHUNKS || process.env.GEMINI_BATCH || 32);
 const MAX_CHUNK_CHARS = 1400;
 const CHUNK_OVERLAP = 150;
 // Verified against the live API (see config.js): GitLab's recursive tree
