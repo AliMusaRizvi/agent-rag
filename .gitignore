@@ -27,3 +27,5 @@ src/server/eval/eval-report.json
 # Local-only compose overrides (a common pattern for per-machine tweaks
 # that shouldn't apply to every clone of this repo)
 docker-compose.override.yml
+drain.sh
+.drain-logs/

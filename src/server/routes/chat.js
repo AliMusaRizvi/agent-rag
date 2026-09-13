@@ -36,15 +36,31 @@ function buildSources(retrievedDocs = [], citations = []) {
   });
 }
 
+// `trace` is a concat-only state channel (see graph.js) so that the full
+// execution history survives across a thread's turns for audit purposes —
+// but that means finalState.trace holds every past turn's steps too, not
+// just this one's. Router runs exactly once, unconditionally, at the start
+// of every turn (START -> router), so the slice from its last occurrence
+// onward is exactly this turn's steps. Without this, a multi-turn thread's
+// summary/graph panel would report the FIRST turn's retrieval/grading
+// numbers forever (Array.find grabs the earliest match), silently
+// describing a completely different question than the one just answered.
+function currentTurnTrace(finalState) {
+  const all = finalState.trace || [];
+  const lastRouterIdx = all.findLastIndex((t) => t.node === 'router');
+  return lastRouterIdx === -1 ? all : all.slice(lastRouterIdx);
+}
+
 // The real, structured per-node trace graph.js already builds — every node
 // appends to it as it runs, in execution order, including repeats when the
 // rewrite/regenerate loops fire. Sent as-is (not just folded into a prose
 // summary) so the UI can render an actual execution-path diagram instead of
 // a paraphrase of one.
 function buildGraphTrace(finalState) {
+  const steps = currentTurnTrace(finalState);
   return {
-    path: (finalState.trace || []).map((t) => t.node),
-    steps: finalState.trace || [],
+    path: steps.map((t) => t.node),
+    steps,
     rewriteCount: finalState.rewriteCount || 0,
     regenerateCount: finalState.regenerateCount || 0,
   };
@@ -52,9 +68,10 @@ function buildGraphTrace(finalState) {
 
 function buildTraceSummary(finalState) {
   const parts = [];
-  const retrieveStep = finalState.trace.find((t) => t.node === 'retrieve');
+  const steps = currentTurnTrace(finalState);
+  const retrieveStep = steps.find((t) => t.node === 'retrieve');
   if (retrieveStep) parts.push(`Retrieved ${retrieveStep.detail.candidates} candidates from hybrid search.`);
-  const rerankStep = finalState.trace.find((t) => t.node === 'rerank');
+  const rerankStep = steps.find((t) => t.node === 'rerank');
   if (rerankStep) parts.push(`Reranked to the top ${rerankStep.detail.kept}.`);
   if (finalState.rewriteCount > 0) parts.push(`Rewrote the search query ${finalState.rewriteCount} time(s) to find better context.`);
   const grade = finalState.graderVerdict;

@@ -100,6 +100,44 @@ const GREETING_RE = /^(hi|hello|hey|yo|sup|thanks|thank you|ok|okay|cool|nice|gr
 // explicit action verb, regardless of what the classifier returns.
 const TOOL_INTENT_RE = /\b(file|create|open|submit|report|log|raise)\b.{0,20}\b(issue|ticket|bug|request)\b/i;
 
+// This graph is checkpointed per thread_id (see buildGraph/getCheckpointer)
+// so conversation history in `messages` survives across turns — that's the
+// point. But the checkpointer persists EVERY channel, not just `messages`,
+// and every channel below defaults to a fresh value only on the very first
+// turn of a thread. Every other channel — retrievedDocs, corpusEmpty,
+// refused, rewriteCount, hallucinationVerdict, and so on — is this-turn
+// output, not conversation memory, and none of the nodes that can set them
+// true/non-empty ever set them back on the turn where they no longer apply
+// (e.g. retrieveNode's success branch never sends corpusEmpty: false).
+// Verified live: a thread's first message hit an empty/unreachable corpus
+// (corpusEmpty or refused got set true), then a later message in the SAME
+// thread retrieved a genuinely strong match — but routeFromGrade's very
+// first check (`state.corpusEmpty`) and chat.js's verdict/unverified logic
+// still read the stale flag from the earlier turn and refused or
+// mislabeled a fully grounded answer, while the sources panel correctly
+// showed the real match this turn's retrieval found. Router runs
+// unconditionally first on every turn (START -> router), so resetting
+// every per-turn channel here guarantees a clean slate before anything
+// else in the turn can set them.
+function freshTurnDefaults() {
+  return {
+    retrievedDocs: [],
+    retrievalError: null,
+    corpusEmpty: false,
+    rewriteCount: 0,
+    graderVerdict: null,
+    refused: false,
+    refusalReason: null,
+    citations: [],
+    regenerateCount: 0,
+    hallucinationVerdict: null,
+    unverified: false,
+    pendingTool: null,
+    toolApproval: null,
+    toolResult: null,
+  };
+}
+
 async function routerNode(state) {
   const lastMessage = state.messages[state.messages.length - 1];
   const text = lastMessage.content;
@@ -108,11 +146,11 @@ async function routerNode(state) {
   const injection = screenForInjection(text);
   if (injection.blocked) {
     logger.warn({ pattern: injection.matched }, 'Blocked message matching a high-confidence prompt-injection pattern');
-    return { route: 'blocked', originalQuery: text, query: text, ...trace('router', { blocked: true, reason: 'prompt-injection pattern' }) };
+    return { ...freshTurnDefaults(), route: 'blocked', originalQuery: text, query: text, ...trace('router', { blocked: true, reason: 'prompt-injection pattern' }) };
   }
 
   if (GREETING_RE.test(text.trim()) && text.length < 30 && history.length === 0) {
-    return { route: 'chat', originalQuery: text, query: text, ...trace('router', { route: 'chat', method: 'heuristic' }) };
+    return { ...freshTurnDefaults(), route: 'chat', originalQuery: text, query: text, ...trace('router', { route: 'chat', method: 'heuristic' }) };
   }
 
   try {
@@ -144,6 +182,7 @@ async function routerNode(state) {
     }
 
     return {
+      ...freshTurnDefaults(),
       route,
       toolIntent,
       originalQuery: text,
@@ -152,7 +191,7 @@ async function routerNode(state) {
     };
   } catch (err) {
     logger.warn({ err: err.message }, 'Router classification failed, defaulting to retrieve');
-    return { route: 'retrieve', originalQuery: text, query: text, ...trace('router', { route: 'retrieve', fallback: true }) };
+    return { ...freshTurnDefaults(), route: 'retrieve', originalQuery: text, query: text, ...trace('router', { route: 'retrieve', fallback: true }) };
   }
 }
 
@@ -213,7 +252,7 @@ async function retrieveNode(state) {
 
   try {
     const docs = await hybridSearch(state.query, { k: 12, tenantId: state.tenantId });
-    return { retrievedDocs: docs, ...trace('retrieve', { query: state.query, candidates: docs.length }) };
+    return { retrievedDocs: docs, corpusEmpty: false, retrievalError: null, ...trace('retrieve', { query: state.query, candidates: docs.length }) };
   } catch (err) {
     logger.error({ err: err.message, query: state.query }, 'Retrieval failed — cannot search the knowledge base');
     return {
